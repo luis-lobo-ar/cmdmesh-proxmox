@@ -1,0 +1,118 @@
+---
+- name: Validate explicit resource values before reading guest state
+  ansible.builtin.assert:
+    that:
+      - >-
+        hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb is not defined
+        or (hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb | string is match('^[1-9][0-9]*$'))
+      - >-
+        hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb is not defined
+        or (hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb | string is match('^[0-9]+$'))
+      - >-
+        hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb is defined
+        or hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb is defined
+
+- name: Read current LXC resource config
+  ansible.builtin.command:
+    argv:
+      - pct
+      - config
+      - "{{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}"
+  register: proxmox_lxc_resources_config
+  changed_when: false
+  check_mode: false
+
+- name: Locate current LXC memory and swap limits
+  ansible.builtin.set_fact:
+    proxmox_lxc_resources_memory_matches: >-
+      {{
+        proxmox_lxc_resources_config.stdout
+        | regex_findall('(?m)^memory: ([0-9]+)$')
+      }}
+    proxmox_lxc_resources_swap_matches: >-
+      {{
+        proxmox_lxc_resources_config.stdout
+        | regex_findall('(?m)^swap: ([0-9]+)$')
+      }}
+
+- name: Validate current LXC memory limit
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_resources_memory_matches | length == 1
+      - >-
+        hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb | int
+        >= proxmox_lxc_resources_memory_matches | first | int
+    fail_msg: >-
+      Refusing an invalid or decreasing memory request for LXC
+      {{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}.
+  when: hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb is defined
+
+- name: Validate current LXC swap limit
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_resources_swap_matches | length == 1
+      - >-
+        hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb | int
+        >= proxmox_lxc_resources_swap_matches | first | int
+    fail_msg: >-
+      Refusing an invalid or decreasing swap request for LXC
+      {{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}.
+  when: hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb is defined
+
+- name: Report planned LXC memory growth in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Would grow LXC {{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}
+      memory from {{ proxmox_lxc_resources_memory_matches | first }} MB to
+      {{ hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb }} MB.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb is defined
+    - >-
+      hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb | int
+      > proxmox_lxc_resources_memory_matches | first | int
+
+- name: Grow LXC memory limit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - set
+      - "{{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}"
+      - --memory
+      - "{{ hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb }}"
+  when:
+    - not ansible_check_mode
+    - hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb is defined
+    - >-
+      hostvars[proxmox_lxc_resources_guest].proxmox_lxc_memory_mb | int
+      > proxmox_lxc_resources_memory_matches | first | int
+
+- name: Report planned LXC swap growth in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Would grow LXC {{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}
+      swap from {{ proxmox_lxc_resources_swap_matches | first }} MB to
+      {{ hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb }} MB.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb is defined
+    - >-
+      hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb | int
+      > proxmox_lxc_resources_swap_matches | first | int
+
+- name: Grow LXC swap limit
+  ansible.builtin.command:
+    argv:
+      - pct
+      - set
+      - "{{ hostvars[proxmox_lxc_resources_guest].proxmox_vmid }}"
+      - --swap
+      - "{{ hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb }}"
+  when:
+    - not ansible_check_mode
+    - hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb is defined
+    - >-
+      hostvars[proxmox_lxc_resources_guest].proxmox_lxc_swap_mb | int
+      > proxmox_lxc_resources_swap_matches | first | int

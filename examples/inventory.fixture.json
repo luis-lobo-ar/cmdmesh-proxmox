@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "complete": true,
+  "resources": [
+    {"kind": "proxmox.node", "id": "node-a", "properties": {"status": "online"}},
+    {"kind": "proxmox.lxc", "id": "node-a/101", "properties": {"node": "node-a", "vmid": 101, "name": "demo", "status": "stopped"}}
+  ],
+  "warnings": []
+}

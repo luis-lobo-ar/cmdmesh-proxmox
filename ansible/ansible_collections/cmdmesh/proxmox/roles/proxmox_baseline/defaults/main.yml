@@ -1,0 +1,3 @@
+---
+proxmox_baseline_host_packages: []
+proxmox_baseline_host_absent_packages: []

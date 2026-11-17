@@ -1,0 +1,17 @@
+---
+- name: Deploy Proxmox no-subscription apt sources
+  become: true
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: '0644'
+  loop:
+    - src: pve-enterprise.sources.j2
+      dest: /etc/apt/sources.list.d/pve-enterprise.sources
+    - src: proxmox.sources.j2
+      dest: /etc/apt/sources.list.d/proxmox.sources
+    - src: ceph.sources.j2
+      dest: /etc/apt/sources.list.d/ceph.sources
+  when: ansible_os_family == 'Debian'

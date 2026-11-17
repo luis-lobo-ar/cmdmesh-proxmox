@@ -1,0 +1,10 @@
+---
+- name: Apply managed Proxmox kernel settings
+  become: true
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/70-cmdmesh-workloads.conf
+    state: present
+    reload: true
+  loop: "{{ proxmox_kernel_sysctls | dict2items }}"

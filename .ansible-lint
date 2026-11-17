@@ -1,0 +1,8 @@
+profile: basic
+# Public role inputs retain a shared proxmox subsystem prefix for compatibility;
+# changing them to file-local role prefixes would break existing consumers.
+skip_list:
+  - var-naming[no-role-prefix]
+exclude_paths:
+  - .ansible/
+  - .venv/

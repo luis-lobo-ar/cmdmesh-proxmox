@@ -1,0 +1,43 @@
+---
+- name: Require explicit DNS ownership and selected guests
+  ansible.builtin.assert:
+    that:
+      - lifecycle_owner | default('') == 'ansible'
+      - proxmox_node is defined
+      - proxmox_lxc_dns_guests | length > 0
+      - proxmox_lxc_dns_guests is not string
+      - proxmox_lxc_dns_nameservers | length > 0
+      - proxmox_lxc_dns_searchdomain | length > 0
+
+- name: Validate selected guest identity and ownership
+  ansible.builtin.assert:
+    that:
+      - item in hostvars
+      - hostvars[item].proxmox_node | default('') == proxmox_node
+      - hostvars[item].proxmox_vmid | default('') | string is match('^[1-9][0-9]{2,8}$')
+      - hostvars[item].lifecycle_owner | default(lifecycle_owner) == 'ansible'
+  loop: "{{ proxmox_lxc_dns_guests }}"
+
+- name: Read selected guest DNS configuration
+  ansible.builtin.command:
+    argv: [pct, config, "{{ hostvars[item].proxmox_vmid }}"]
+  register: proxmox_lxc_dns_current_configs
+  changed_when: false
+  check_mode: false
+  loop: "{{ proxmox_lxc_dns_guests }}"
+
+- name: Apply DNS only to selected guests
+  ansible.builtin.command:
+    argv:
+      - pct
+      - set
+      - "{{ hostvars[item.item].proxmox_vmid }}"
+      - --nameserver
+      - "{{ proxmox_lxc_dns_nameservers | join(' ') }}"
+      - --searchdomain
+      - "{{ proxmox_lxc_dns_searchdomain }}"
+  changed_when: true
+  when: >-
+    ('nameserver: ' ~ (proxmox_lxc_dns_nameservers | join(' '))) not in item.stdout_lines
+    or ('searchdomain: ' ~ proxmox_lxc_dns_searchdomain) not in item.stdout_lines
+  loop: "{{ proxmox_lxc_dns_current_configs.results }}"

@@ -1,0 +1,9 @@
+---
+proxmox_nfs_backup_storage_enabled: false
+proxmox_nfs_backup_storage_id: ""
+proxmox_nfs_backup_storage_server: ""
+proxmox_nfs_backup_storage_export: ""
+proxmox_nfs_backup_storage_content: backup
+proxmox_nfs_backup_storage_options: vers=3
+proxmox_nfs_backup_storage_status_retries: 5
+proxmox_nfs_backup_storage_status_delay: 3

@@ -1,0 +1,212 @@
+---
+- name: Validate safe backup output paths
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_backup_dir is match('^/[A-Za-z0-9_./-]+$')
+      - proxmox_vm_backup_metrics_dir is match('^/[A-Za-z0-9_./-]+$')
+      - proxmox_vm_backup_tmpdir | length == 0 or proxmox_vm_backup_tmpdir is match('^/[A-Za-z0-9_./-]+$')
+
+- name: Require unique backup job names
+  ansible.builtin.assert:
+    that:
+      - proxmox_vm_backup_jobs | map(attribute='name') | list | unique | length == proxmox_vm_backup_jobs | length
+    fail_msg: Backup job names must be unique to prevent timer or metrics collisions.
+
+- name: Validate Proxmox VM backup jobs
+  ansible.builtin.assert:
+    that:
+      - item.name is regex('^[a-z0-9-]+$')
+      - item.vmid | int > 0
+      - item.vmid | string is match('^[1-9][0-9]{2,8}$')
+      - item.keep_last | int > 0
+      - item.keep_last | string is match('^[1-9][0-9]*$')
+      - item.on_calendar | length > 0
+      - item.on_calendar is match('^[A-Za-z0-9*:/,. =+-]+$')
+      - (item.guest_type | default('qemu')) in ['qemu', 'lxc']
+      - >-
+        proxmox_vm_backup_storage | length == 0 or
+        proxmox_vm_backup_storage is regex('^[a-z0-9-]+$')
+      - >-
+        proxmox_vm_backup_tmpdir | length == 0 or
+        proxmox_vm_backup_tmpdir is match('^/[A-Za-z0-9_./-]+$')
+      - proxmox_vm_backup_mode in ['snapshot', 'suspend', 'stop']
+  loop: "{{ proxmox_vm_backup_jobs }}"
+
+- name: Validate Proxmox LXC backup exclusions
+  ansible.builtin.assert:
+    that:
+      - item.1 is match('^/[a-zA-Z0-9_./*?{}+-]+$')
+    fail_msg: "LXC backup exclusions must be anchored safe shell globs."
+  loop: >-
+    {{ query('subelements', proxmox_vm_backup_jobs, 'exclude_paths',
+    {'skip_missing': true}) }}
+
+- name: Create Proxmox VM backup and metrics directories
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ proxmox_vm_backup_metrics_dir }}"
+  when: proxmox_vm_backup_jobs | length > 0
+
+- name: Create local Proxmox backup directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ proxmox_vm_backup_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when:
+    - proxmox_vm_backup_jobs | length > 0
+    - proxmox_vm_backup_storage | length == 0
+
+- name: Create local Proxmox backup staging directory
+  become: true
+  ansible.builtin.file:
+    path: "{{ proxmox_vm_backup_tmpdir }}"
+    state: directory
+    owner: root
+    group: root
+    # Unprivileged LXC backup tar runs as mapped root and must traverse this
+    # parent; it still cannot list or modify sibling staging directories.
+    mode: "0711"
+  when:
+    - proxmox_vm_backup_jobs | length > 0
+    - proxmox_vm_backup_tmpdir | length > 0
+
+- name: Protect the configured private NFS backup archive directory
+  when: proxmox_vm_backup_private_archive_dir | length > 0
+  block:
+    - name: Validate private archive directory is in the selected storage
+      ansible.builtin.assert:
+        that:
+          - proxmox_vm_backup_storage | length > 0
+          - >-
+            proxmox_vm_backup_private_archive_dir ==
+            '/mnt/pve/' ~ proxmox_vm_backup_storage ~ '/dump'
+
+    - name: Verify the private archive storage is mounted
+      ansible.builtin.command:
+        argv:
+          - findmnt
+          - --noheadings
+          - --mountpoint
+          - "/mnt/pve/{{ proxmox_vm_backup_storage }}"
+          - --output
+          - FSTYPE
+      register: proxmox_vm_backup_archive_mount
+      changed_when: false
+      check_mode: false
+
+    - name: Inspect the existing private archive directory
+      ansible.builtin.stat:
+        path: "{{ proxmox_vm_backup_private_archive_dir }}"
+        follow: false
+      register: proxmox_vm_backup_archive_stat
+
+    - name: Require the existing root-owned archive on NFS
+      ansible.builtin.assert:
+        that:
+          - proxmox_vm_backup_archive_mount.stdout | trim in ['nfs', 'nfs4']
+          - proxmox_vm_backup_archive_stat.stat.isdir | default(false)
+          - not (proxmox_vm_backup_archive_stat.stat.islnk | default(false))
+          - proxmox_vm_backup_archive_stat.stat.uid | default(-1) == 0
+        fail_msg: >-
+          Refusing archive permission changes without the expected root-owned
+          directory on mounted NFS storage.
+
+    - name: Restrict archive traversal and reads to host root
+      ansible.builtin.file:
+        path: "{{ proxmox_vm_backup_private_archive_dir }}"
+        state: directory
+        mode: "0700"
+
+- name: Install guarded Proxmox VM backup wrapper
+  become: true
+  ansible.builtin.template:
+    src: backup-vm.sh.j2
+    dest: /usr/local/sbin/cmdmesh-backup-proxmox-vm
+    owner: root
+    group: root
+    mode: "0750"
+  when: proxmox_vm_backup_jobs | length > 0
+
+- name: Inspect existing Proxmox guest backup metrics
+  become: true
+  ansible.builtin.stat:
+    path: >-
+      {{ proxmox_vm_backup_metrics_dir
+      }}/proxmox_vm_backup_{{ item.name }}.prom
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  register: proxmox_vm_backup_metric_files
+
+- name: Migrate backup metric labels away from Prometheus reserved job label
+  become: true
+  ansible.builtin.replace:
+    path: "{{ item.stat.path }}"
+    regexp: ',job="'
+    replace: ',backup_job="'
+  loop: "{{ proxmox_vm_backup_metric_files.results }}"
+  when: item.stat.exists
+
+- name: Install Proxmox VM backup services
+  become: true
+  ansible.builtin.template:
+    src: backup-vm.service.j2
+    dest: "/etc/systemd/system/cmdmesh-vm-backup-{{ item.name }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  notify: Reload systemd for Proxmox VM backups
+
+- name: Install Proxmox VM backup timers
+  become: true
+  ansible.builtin.template:
+    src: backup-vm.timer.j2
+    dest: "/etc/systemd/system/cmdmesh-vm-backup-{{ item.name }}.timer"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  notify: Reload systemd for Proxmox VM backups
+
+- name: Flush Proxmox VM backup unit changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable Proxmox VM backup timers
+  become: true
+  ansible.builtin.systemd:
+    name: "cmdmesh-vm-backup-{{ item.name }}.timer"
+    enabled: true
+    state: started
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  when:
+    - not ansible_check_mode
+    - proxmox_vm_backup_schedule_enabled | bool
+
+- name: Disable Proxmox VM backup timers when scheduling is disabled
+  become: true
+  ansible.builtin.systemd:
+    name: "cmdmesh-vm-backup-{{ item.name }}.timer"
+    enabled: false
+    state: stopped
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  when:
+    - not ansible_check_mode
+    - not (proxmox_vm_backup_schedule_enabled | bool)
+
+- name: Remove stale Proxmox VM backup metrics when scheduling is disabled
+  become: true
+  ansible.builtin.file:
+    path: >-
+      {{ proxmox_vm_backup_metrics_dir
+      }}/proxmox_vm_backup_{{ item.name }}.prom
+    state: absent
+  loop: "{{ proxmox_vm_backup_jobs }}"
+  when: not (proxmox_vm_backup_schedule_enabled | bool)

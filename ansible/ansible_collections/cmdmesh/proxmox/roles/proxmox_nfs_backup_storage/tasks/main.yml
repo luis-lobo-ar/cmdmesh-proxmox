@@ -1,0 +1,117 @@
+---
+- name: Validate Proxmox NFS backup-storage contract
+  ansible.builtin.assert:
+    that:
+      - proxmox_nfs_backup_storage_enabled | bool
+      - proxmox_nfs_backup_storage_id is regex('^[a-z0-9-]+$')
+      - proxmox_nfs_backup_storage_server | length > 0
+      - proxmox_nfs_backup_storage_export is match('^/\\S+$')
+      - proxmox_nfs_backup_storage_content == 'backup'
+      - >-
+        proxmox_nfs_backup_storage_options is
+        regex('^[a-zA-Z0-9=,._-]+$')
+    fail_msg: >-
+      The NFS target must be an explicit backup-only Proxmox storage with
+      validated identifiers and mount options.
+
+- name: Install NFS client support
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: false
+
+- name: Inspect existing Proxmox backup storage
+  ansible.builtin.command:
+    argv:
+      - pvesh
+      - get
+      - "/storage/{{ proxmox_nfs_backup_storage_id }}"
+      - --output-format
+      - json
+  register: proxmox_nfs_backup_storage_query
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Parse existing Proxmox backup storage
+  ansible.builtin.set_fact:
+    proxmox_nfs_backup_storage_current: >-
+      {{ proxmox_nfs_backup_storage_query.stdout | from_json }}
+  when: proxmox_nfs_backup_storage_query.rc == 0
+
+- name: Refuse ambiguous storage lookup failures
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_nfs_backup_storage_query.rc == 0 or
+        'does not exist' in proxmox_nfs_backup_storage_query.stderr
+    fail_msg: Refusing storage creation after an unexpected lookup failure.
+
+- name: Refuse changing an existing non-NFS storage type
+  ansible.builtin.assert:
+    that:
+      - proxmox_nfs_backup_storage_current.type == 'nfs'
+    fail_msg: Existing storage type differs. No replacement is authorized.
+  when: proxmox_nfs_backup_storage_query.rc == 0
+
+- name: Add Proxmox NFS backup storage
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - add
+      - nfs
+      - "{{ proxmox_nfs_backup_storage_id }}"
+      - --server
+      - "{{ proxmox_nfs_backup_storage_server }}"
+      - --export
+      - "{{ proxmox_nfs_backup_storage_export }}"
+      - --content
+      - "{{ proxmox_nfs_backup_storage_content }}"
+      - --options
+      - "{{ proxmox_nfs_backup_storage_options }}"
+  when: proxmox_nfs_backup_storage_query.rc != 0
+
+- name: Update changed Proxmox NFS backup-storage settings
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - set
+      - "{{ proxmox_nfs_backup_storage_id }}"
+      - --server
+      - "{{ proxmox_nfs_backup_storage_server }}"
+      - --export
+      - "{{ proxmox_nfs_backup_storage_export }}"
+      - --content
+      - "{{ proxmox_nfs_backup_storage_content }}"
+      - --options
+      - "{{ proxmox_nfs_backup_storage_options }}"
+  when:
+    - proxmox_nfs_backup_storage_query.rc == 0
+    - >-
+      proxmox_nfs_backup_storage_current.type != 'nfs' or
+      proxmox_nfs_backup_storage_current.server !=
+      proxmox_nfs_backup_storage_server or
+      proxmox_nfs_backup_storage_current.export !=
+      proxmox_nfs_backup_storage_export or
+      proxmox_nfs_backup_storage_current.content !=
+      proxmox_nfs_backup_storage_content or
+      proxmox_nfs_backup_storage_current.options | default('') !=
+      proxmox_nfs_backup_storage_options
+
+- name: Wait for Proxmox NFS backup storage to become active
+  ansible.builtin.command:
+    argv:
+      - pvesm
+      - status
+      - --storage
+      - "{{ proxmox_nfs_backup_storage_id }}"
+  register: proxmox_nfs_backup_storage_status
+  changed_when: false
+  check_mode: false
+  retries: "{{ proxmox_nfs_backup_storage_status_retries }}"
+  delay: "{{ proxmox_nfs_backup_storage_status_delay }}"
+  until:
+    - proxmox_nfs_backup_storage_status.rc == 0
+    - "'active' in proxmox_nfs_backup_storage_status.stdout.split()"
+  when:
+    - not ansible_check_mode or proxmox_nfs_backup_storage_query.rc == 0

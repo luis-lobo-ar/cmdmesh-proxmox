@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+vmid=${1:?VMID required}
+keep_last=${2:?retention required}
+job=${3:?job name required}
+guest_type=${4:?guest type required}
+case "${vmid}:${keep_last}:${job}:${guest_type}" in
+  *[!0-9:a-z-]*) echo "invalid backup arguments" >&2; exit 2 ;;
+esac
+case "${guest_type}" in
+  qemu) qm config "${vmid}" >/dev/null ;;
+  lxc) pct config "${vmid}" >/dev/null ;;
+  *) echo "guest type must be qemu or lxc" >&2; exit 2 ;;
+esac
+
+{% if proxmox_vm_backup_storage | length > 0 %}
+backup_target=(--storage {{ proxmox_vm_backup_storage | quote }})
+{% else %}
+backup_target=(--dumpdir {{ proxmox_vm_backup_dir | quote }})
+{% endif %}
+{% if proxmox_vm_backup_tmpdir | length > 0 %}
+tmpdir_args=(--tmpdir {{ proxmox_vm_backup_tmpdir | quote }})
+{% else %}
+tmpdir_args=()
+{% endif %}
+exclude_args=()
+case "${job}" in
+{% for backup_job in proxmox_vm_backup_jobs %}
+{% if backup_job.exclude_paths | default([]) | length > 0 %}
+  {{ backup_job.name }})
+{% for exclude_path in backup_job.exclude_paths %}
+    exclude_args+=(--exclude-path {{ exclude_path | quote }})
+{% endfor %}
+    ;;
+{% endif %}
+{% endfor %}
+  *) ;;
+esac
+
+metrics_file="{{ proxmox_vm_backup_metrics_dir }}/proxmox_vm_backup_${job}.prom"
+metrics_tmp="${metrics_file}.$$"
+status=0
+# Metrics report results; configure notification routing separately.
+# Backup bind-mounted datasets separately; vzdump does not protect them by default.
+if vzdump "${vmid}" \
+  "${backup_target[@]}" \
+  "${tmpdir_args[@]}" \
+  "${exclude_args[@]}" \
+  --mode {{ proxmox_vm_backup_mode | quote }} \
+  --compress zstd \
+  --notification-mode legacy-sendmail \
+  --mailnotification failure \
+  --prune-backups "keep-last=${keep_last}"; then
+  status=0
+else
+  status=$?
+fi
+
+now=$(date +%s)
+{
+  echo '# HELP proxmox_vm_backup_last_status Exit status of the latest Proxmox VM backup.'
+  echo '# TYPE proxmox_vm_backup_last_status gauge'
+  echo "proxmox_vm_backup_last_status{host=\"{{ inventory_hostname }}\",backup_job=\"${job}\",vmid=\"${vmid}\"} ${status}"
+  echo '# HELP proxmox_vm_backup_last_run_timestamp_seconds Unix timestamp of the latest Proxmox VM backup attempt.'
+  echo '# TYPE proxmox_vm_backup_last_run_timestamp_seconds gauge'
+  echo "proxmox_vm_backup_last_run_timestamp_seconds{host=\"{{ inventory_hostname }}\",backup_job=\"${job}\",vmid=\"${vmid}\"} ${now}"
+  if [[ "${status}" -eq 0 ]]; then
+    echo '# HELP proxmox_vm_backup_last_success_timestamp_seconds Unix timestamp of the latest successful Proxmox VM backup.'
+    echo '# TYPE proxmox_vm_backup_last_success_timestamp_seconds gauge'
+    echo "proxmox_vm_backup_last_success_timestamp_seconds{host=\"{{ inventory_hostname }}\",backup_job=\"${job}\",vmid=\"${vmid}\"} ${now}"
+  fi
+} >"${metrics_tmp}"
+mv "${metrics_tmp}" "${metrics_file}"
+exit "${status}"

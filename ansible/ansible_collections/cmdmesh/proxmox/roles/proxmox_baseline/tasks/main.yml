@@ -1,0 +1,15 @@
+---
+- name: Install explicitly selected host packages
+  ansible.builtin.apt:
+    name: "{{ proxmox_baseline_host_packages }}"
+    state: present
+    update_cache: true
+  when: proxmox_baseline_host_packages | length > 0
+
+- name: Remove explicitly selected host packages
+  ansible.builtin.apt:
+    name: "{{ proxmox_baseline_host_absent_packages }}"
+    state: absent
+    purge: false
+    autoremove: false
+  when: proxmox_baseline_host_absent_packages | length > 0

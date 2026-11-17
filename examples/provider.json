@@ -1,0 +1,7 @@
+{
+  "endpoint": "https://pve.example.invalid:8006",
+  "ca_file": "./private/pve-ca.pem",
+  "token_id_env": "PVE_TOKEN_ID",
+  "token_secret_env": "PVE_TOKEN_SECRET",
+  "timeout_seconds": 10
+}

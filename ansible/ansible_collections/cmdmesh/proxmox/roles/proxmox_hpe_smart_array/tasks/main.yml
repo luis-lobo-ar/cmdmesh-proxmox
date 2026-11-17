@@ -1,0 +1,165 @@
+---
+- name: Validate HPE Smart Array management contract
+  ansible.builtin.assert:
+    that:
+      - proxmox_hpe_smart_array_enabled | bool
+      - proxmox_hpe_smart_array_controller_slot is match('^[0-9]+$')
+      - proxmox_hpe_smart_array_expected_pci_id is match('^[0-9a-f]{4}:[0-9a-f]{4}$')
+      - proxmox_hpe_smart_array_expected_product_pattern | length > 0
+      - ansible_distribution == "Debian"
+      - ansible_distribution_major_version == "13"
+      - ansible_architecture == "x86_64"
+      - proxmox_hpe_mcp_repository_url is match('^https://')
+      - proxmox_hpe_mcp_key_sha256 is match('^[0-9a-f]{64}$')
+      - proxmox_hpe_mcp_key_fingerprint is match('^[0-9A-F]{40}$')
+      - proxmox_hpe_ssacli_version | length > 0
+      - proxmox_hpe_ssaducli_version | length > 0
+    fail_msg: >-
+      HPE Smart Array tooling is restricted to the reviewed Debian 13 amd64
+      repository and pinned packages.
+
+- name: Read HPE server product identity
+  ansible.builtin.command:
+    argv: [dmidecode, -s, system-product-name]
+  register: proxmox_hpe_system_product
+  changed_when: false
+
+- name: Read PCI controller inventory
+  ansible.builtin.command:
+    argv: [lspci, -Dn]
+  register: proxmox_hpe_pci_inventory
+  changed_when: false
+
+- name: Refuse HPE tools on an unexpected host
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_hpe_system_product.stdout is search(
+        proxmox_hpe_smart_array_expected_product_pattern)
+      - >-
+        proxmox_hpe_pci_inventory.stdout is search(
+        proxmox_hpe_smart_array_expected_pci_id)
+    fail_msg: >-
+      The live system product or Smart Array PCI identity does not match the
+      reviewed operator configuration.
+
+- name: Install HPE repository prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - gnupg
+      - pciutils
+      - smartmontools
+    state: present
+    update_cache: false
+
+- name: Download pinned HPE package-signing key
+  ansible.builtin.get_url:
+    url: "{{ proxmox_hpe_mcp_key_url }}"
+    dest: "{{ proxmox_hpe_mcp_key_path }}"
+    checksum: "sha256:{{ proxmox_hpe_mcp_key_sha256 }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Inspect HPE package-signing key fingerprint
+  ansible.builtin.command:
+    argv:
+      - gpg
+      - --batch
+      - --show-keys
+      - --with-colons
+      - "{{ proxmox_hpe_mcp_key_path }}"
+  register: proxmox_hpe_mcp_key_inspection
+  changed_when: false
+
+- name: Validate HPE package-signing key fingerprint
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_hpe_mcp_key_fingerprint in
+        proxmox_hpe_mcp_key_inspection.stdout
+    fail_msg: "The downloaded HPE signing key fingerprint is unexpected."
+
+- name: Install signed HPE MCP apt source
+  ansible.builtin.template:
+    src: hpe-mcp.sources.j2
+    dest: "{{ proxmox_hpe_mcp_source_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: proxmox_hpe_mcp_source
+
+- name: Install pinned HPE Smart Array tools
+  ansible.builtin.apt:
+    name:
+      - "ssacli={{ proxmox_hpe_ssacli_version }}"
+      - "ssaducli={{ proxmox_hpe_ssaducli_version }}"
+    state: present
+    update_cache: "{{ proxmox_hpe_mcp_source.changed }}"
+    allow_downgrade: false
+
+- name: Verify installed HPE Smart Array tool versions
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - -W
+      - -f=${Package}=${Version}\n
+      - ssacli
+      - ssaducli
+  register: proxmox_hpe_installed_versions
+  changed_when: false
+
+- name: Assert exact HPE Smart Array tool versions
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('ssacli=' ~ proxmox_hpe_ssacli_version) in
+        proxmox_hpe_installed_versions.stdout_lines
+      - >-
+        ('ssaducli=' ~ proxmox_hpe_ssaducli_version) in
+        proxmox_hpe_installed_versions.stdout_lines
+
+- name: Install guarded Smart Array operator tools
+  ansible.builtin.template:
+    src: "{{ item.source }}"
+    dest: "{{ item.destination }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - source: cmdmesh-smart-array-drive.sh.j2
+      destination: /usr/local/sbin/cmdmesh-smart-array-drive
+    - source: cmdmesh-smart-array-report.sh.j2
+      destination: /usr/local/sbin/cmdmesh-smart-array-report
+
+- name: Resolve the inventoried attention drive through the controller
+  ansible.builtin.command:
+    argv:
+      - /usr/local/sbin/cmdmesh-smart-array-drive
+      - --show
+      - --serial
+      - "{{ proxmox_hpe_smart_array_attention_serial }}"
+  register: proxmox_hpe_attention_drive
+  changed_when: false
+  when: proxmox_hpe_smart_array_attention_serial | length > 0
+
+- name: Report the inventoried attention-drive mapping
+  ansible.builtin.debug:
+    msg: "{{ proxmox_hpe_attention_drive.stdout_lines | first }}"
+  when: proxmox_hpe_smart_array_attention_serial | length > 0
+
+- name: Validate Smart Array controller is queryable
+  ansible.builtin.command:
+    argv:
+      - ssacli
+      - ctrl
+      - "slot={{ proxmox_hpe_smart_array_controller_slot }}"
+      - show
+      - status
+  register: proxmox_hpe_controller_status
+  changed_when: false
+
+- name: Report Smart Array controller status
+  ansible.builtin.debug:
+    var: proxmox_hpe_controller_status.stdout_lines

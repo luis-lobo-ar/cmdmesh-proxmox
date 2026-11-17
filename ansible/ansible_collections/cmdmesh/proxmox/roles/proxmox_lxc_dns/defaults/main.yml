@@ -1,0 +1,4 @@
+---
+proxmox_lxc_dns_searchdomain: ''
+proxmox_lxc_dns_nameservers: []
+proxmox_lxc_dns_guests: []

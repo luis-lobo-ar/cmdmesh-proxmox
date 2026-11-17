@@ -1,0 +1,12 @@
+namespace: cmdmesh
+name: proxmox
+version: 0.1.0
+readme: README.md
+authors: [Luis Lobo Borobia]
+description: Explicit-target Proxmox host and LXC operational building blocks.
+license: [MIT]
+tags: [proxmox, infrastructure, linux]
+dependencies:
+  ansible.posix: '==2.1.0'
+repository: https://github.com/luis-lobo-ar/cmdmesh-proxmox
+build_ignore: [tests, '*.tar.gz']

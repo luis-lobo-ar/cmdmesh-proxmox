@@ -1,0 +1,5 @@
+---
+proxmox_apt_suite: "{{ ansible_distribution_release }}"
+proxmox_apt_keyring: /usr/share/keyrings/proxmox-archive-keyring.gpg
+proxmox_apt_pve_no_subscription_uri: http://download.proxmox.com/debian/pve
+proxmox_apt_ceph_no_subscription_uri: http://download.proxmox.com/debian/ceph-squid

@@ -1,0 +1,22 @@
+---
+proxmox_hpe_smart_array_enabled: false
+proxmox_hpe_smart_array_controller_slot: ""
+proxmox_hpe_smart_array_expected_pci_id: ""
+proxmox_hpe_smart_array_expected_product_pattern: ""
+
+proxmox_hpe_mcp_repository_url: >-
+  https://downloads.linux.hpe.com/SDR/repo/mcp
+proxmox_hpe_mcp_suite: trixie/current
+proxmox_hpe_mcp_key_url: >-
+  https://downloads.linux.hpe.com/SDR/hpePublicKey2048_key2.pub
+proxmox_hpe_mcp_key_sha256: >-
+  60888e9309eda5f45428605c80d7210fed5fe0999a774b1a480da8fafeceb902
+proxmox_hpe_mcp_key_fingerprint: >-
+  9E8C4A25C49408EFA8D09D96E3FE26E774C3A4A2
+proxmox_hpe_mcp_key_path: /usr/share/keyrings/hpe-mcp-2024.asc
+proxmox_hpe_mcp_source_path: /etc/apt/sources.list.d/hpe-mcp.sources
+
+proxmox_hpe_ssacli_version: 6.60-8.0
+proxmox_hpe_ssaducli_version: 6.60-8.0
+proxmox_hpe_smart_array_smart_device: /dev/sda
+proxmox_hpe_smart_array_attention_serial: ""

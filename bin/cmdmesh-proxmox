@@ -1,0 +1,224 @@
+#!/usr/bin/env python3
+"""Bounded, GET-only Proxmox inventory. Python 3.10+, standard library only."""
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import ssl
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+
+MAX_BYTES = 2 * 1024 * 1024
+MAX_NODES = 128
+MAX_RESOURCES = 20000
+ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NODE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+CONFIG_KEYS = {"endpoint", "ca_file", "token_id_env", "token_secret_env", "timeout_seconds"}
+
+
+class InventoryError(Exception):
+    """Contains safe fixed diagnostic text, never response bodies or secrets."""
+
+
+class InventoryDeadline(Exception):
+    """A global deadline must not be downgraded to a per-node warning."""
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_args, **_kwargs):
+        raise InventoryError("API redirect refused")
+
+
+def snapshot(resources=None, warnings=None):
+    warnings = warnings or []
+    return {"schema_version": 1, "complete": not warnings,
+            "resources": resources or [], "warnings": warnings}
+
+
+def load_json(stream):
+    raw = stream.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise InventoryError("JSON input exceeds size limit")
+    try:
+        return json.loads(raw, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError):
+        raise InventoryError("Invalid JSON document") from None
+
+
+def validate_config(config):
+    if not isinstance(config, dict) or set(config) - CONFIG_KEYS:
+        raise InventoryError("Unsupported provider configuration")
+    endpoint = config.get("endpoint")
+    if not isinstance(endpoint, str):
+        raise InventoryError("HTTPS endpoint is required")
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+        parsed.port
+    except ValueError:
+        raise InventoryError("Invalid HTTPS endpoint") from None
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password
+            or parsed.path not in ("", "/") or parsed.query or parsed.fragment
+            or any(c.isspace() for c in endpoint)):
+        raise InventoryError("Endpoint must be an HTTPS origin without credentials")
+    timeout = config.get("timeout_seconds", 10)
+    if type(timeout) not in (int, float) or not 0 < timeout <= 60:
+        raise InventoryError("timeout_seconds must be greater than zero and at most 60")
+    credentials = []
+    for key in ("token_id_env", "token_secret_env"):
+        name = config.get(key)
+        if not isinstance(name, str) or not ENV_NAME.fullmatch(name):
+            raise InventoryError("Explicit credential environment references are required")
+        value = os.environ.get(name)
+        if not value or not value.isascii() or any(ord(c) < 33 or ord(c) > 126 for c in value):
+            raise InventoryError("Required credential environment value is unavailable or invalid")
+        credentials.append(value)
+    if not re.fullmatch(r"[A-Za-z0-9_.@-]+![A-Za-z0-9_.-]+", credentials[0]):
+        raise InventoryError("Invalid API token identifier")
+    try:
+        context = ssl.create_default_context(cafile=config.get("ca_file"))
+    except (OSError, ssl.SSLError, TypeError):
+        raise InventoryError("Cannot load the configured CA trust") from None
+    return endpoint.rstrip("/"), timeout, credentials, context
+
+
+def api_get(opener, endpoint, path, token, timeout):
+    request = urllib.request.Request(endpoint + "/api2/json" + path,
+                                    headers={"Authorization": token, "Accept": "application/json"},
+                                    method="GET")
+    try:
+        with opener.open(request, timeout=timeout) as response:
+            payload = load_json(response)
+    except InventoryError:
+        raise
+    except urllib.error.HTTPError as error:
+        raise InventoryError(f"API request failed with HTTP {error.code}") from None
+    except (OSError, urllib.error.URLError, ValueError):
+        raise InventoryError("API transport or TLS validation failed") from None
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise InventoryError("API response must contain an inventory array")
+    if len(payload["data"]) > MAX_RESOURCES:
+        raise InventoryError("API inventory resource limit exceeded")
+    return payload["data"]
+
+
+def properties(entry, keys):
+    result = {}
+    for key in keys:
+        value = entry.get(key)
+        if isinstance(value, (str, int, float, bool)) and (not isinstance(value, str) or len(value) <= 512):
+            result[key] = value
+    return result
+
+
+def inventory(config):
+    endpoint, timeout, credentials, context = validate_config(config)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
+                                        urllib.request.HTTPSHandler(context=context), NoRedirect())
+    token = "PVEAPIToken=" + "=".join(credentials)
+    nodes = api_get(opener, endpoint, "/nodes", token, timeout)
+    if not nodes or len(nodes) > MAX_NODES:
+        raise InventoryError("Node inventory is empty or exceeds the node limit")
+    resources, warnings, identities = [], [], set()
+    for entry in nodes:
+        node = entry.get("node") if isinstance(entry, dict) else None
+        if not isinstance(node, str) or not NODE_NAME.fullmatch(node) or node in identities:
+            raise InventoryError("Invalid or duplicate node identity")
+        identities.add(node)
+        resources.append({"kind": "proxmox.node", "id": node,
+                          "properties": properties(entry, ("status", "cpu", "maxcpu", "mem", "maxmem", "uptime"))})
+        for resource_type, kind in (("qemu", "proxmox.vm"), ("lxc", "proxmox.lxc")):
+            try:
+                guests = api_get(opener, endpoint, f"/nodes/{node}/{resource_type}", token, timeout)
+                seen = set()
+                normalized = []
+                for guest in guests:
+                    vmid = guest.get("vmid") if isinstance(guest, dict) else None
+                    if type(vmid) is not int or not 100 <= vmid <= 999999999 or vmid in seen:
+                        raise InventoryError("Invalid or duplicate guest identity")
+                    seen.add(vmid)
+                    normalized.append({"kind": kind, "id": f"{node}/{vmid}", "properties": {
+                        "node": node, "vmid": vmid, **properties(guest,
+                        ("name", "status", "cpu", "maxcpu", "mem", "maxmem", "disk", "maxdisk", "uptime"))}})
+                if len(resources) + len(normalized) > MAX_RESOURCES:
+                    raise InventoryError("Total inventory resource limit exceeded")
+                resources.extend(normalized)
+            except InventoryError as error:
+                warnings.append(f"{resource_type} collection incomplete: {error}")
+    return snapshot(resources, warnings)
+
+
+def validate_fixture(value):
+    if (not isinstance(value, dict) or type(value.get("schema_version")) is not int
+            or value.get("schema_version") != 1 or type(value.get("complete")) is not bool
+            or not isinstance(value.get("resources"), list) or not isinstance(value.get("warnings"), list)):
+        raise InventoryError("Invalid fixture snapshot")
+    if len(value["resources"]) > MAX_RESOURCES:
+        raise InventoryError("Fixture resource limit exceeded")
+    seen = set()
+    for item in value["resources"]:
+        if (not isinstance(item, dict) or item.get("kind") not in ("proxmox.node", "proxmox.vm", "proxmox.lxc")
+                or not isinstance(item.get("id"), str) or not item["id"]
+                or not isinstance(item.get("properties"), dict)):
+            raise InventoryError("Invalid fixture resource")
+        identity = (item["kind"], item["id"])
+        if identity in seen:
+            raise InventoryError("Duplicate fixture resource")
+        seen.add(identity)
+    if not all(isinstance(w, str) for w in value["warnings"]):
+        raise InventoryError("Invalid fixture warnings")
+    if value["complete"] and (not value["resources"] or value["warnings"]):
+        raise InventoryError("Fixture cannot claim empty or warned success")
+    return value
+
+
+def deadline(_signum, _frame):
+    raise InventoryDeadline()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("operation", nargs="?", choices=["inventory"])
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--fixture", type=Path, help="Explicit offline synthetic snapshot; never fallback")
+    args = parser.parse_args()
+    try:
+        if args.fixture and args.config:
+            raise InventoryError("Choose either --fixture or --config")
+        if hasattr(signal, "SIGALRM"):
+            signal.signal(signal.SIGALRM, deadline)
+            signal.alarm(120)
+        if args.fixture:
+            with args.fixture.open("rb") as stream:
+                result = validate_fixture(load_json(stream))
+        elif args.config:
+            with args.config.open("rb") as stream:
+                result = inventory(load_json(stream))
+        else:
+            request = load_json(sys.stdin.buffer)
+            if (not isinstance(request, dict) or type(request.get("schema_version")) is not int
+                    or request.get("schema_version") != 1 or request.get("operation") != "inventory"
+                    or set(request) != {"schema_version", "operation", "config"}):
+                raise InventoryError("Unsupported inventory request")
+            result = inventory(request["config"])
+    except InventoryDeadline:
+        result = snapshot(warnings=["Total inventory deadline exceeded"])
+    except InventoryError as error:
+        result = snapshot(warnings=[str(error)])
+    except (OSError, ValueError, TypeError, RecursionError):
+        result = snapshot(warnings=["Cannot read valid inventory configuration or fixture"])
+    finally:
+        if hasattr(signal, "SIGALRM"):
+            signal.alarm(0)
+    print(json.dumps(result, separators=(",", ":"), allow_nan=False))
+    # Protocol success means a valid snapshot was emitted, not complete inventory.
+    # Direct CLI use additionally signals incomplete inventory through exit status.
+    protocol_mode = args.config is None and args.fixture is None
+    return 0 if protocol_mode or result["complete"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

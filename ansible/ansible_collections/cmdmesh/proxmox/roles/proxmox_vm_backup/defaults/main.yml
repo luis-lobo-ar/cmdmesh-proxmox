@@ -1,0 +1,9 @@
+---
+proxmox_vm_backup_jobs: []
+proxmox_vm_backup_dir: /var/lib/vz/dump
+proxmox_vm_backup_storage: ""
+proxmox_vm_backup_tmpdir: ""
+proxmox_vm_backup_private_archive_dir: ""
+proxmox_vm_backup_mode: snapshot
+proxmox_vm_backup_metrics_dir: /var/lib/prometheus/node-exporter
+proxmox_vm_backup_schedule_enabled: false

@@ -1,0 +1,94 @@
+---
+- name: Validate Proxmox maintenance is explicitly enabled
+  ansible.builtin.assert:
+    that:
+      - proxmox_maintenance_enabled | bool
+      - proxmox_maintenance_reboot | bool
+    fail_msg: >-
+      Refusing Proxmox package maintenance without explicit inventory opt-in
+      and reboot authorization.
+
+- name: Refuse maintenance while a documented recovery blocker remains
+  ansible.builtin.assert:
+    that:
+      - proxmox_maintenance_blocked_reason | trim | length == 0
+    fail_msg: "{{ proxmox_maintenance_blocked_reason }}"
+
+- name: Inspect running Proxmox guests before maintenance
+  ansible.builtin.shell: |
+    set -euo pipefail
+    pct list | awk 'NR > 1 && $2 == "running" {print $1}'
+  args:
+    executable: /bin/bash
+  register: proxmox_maintenance_lxc_list
+  changed_when: false
+  check_mode: false
+
+- name: Inspect running Proxmox virtual machines before maintenance
+  ansible.builtin.shell: |
+    set -euo pipefail
+    qm list | awk 'NR > 1 && $3 == "running" {print $1}'
+  args:
+    executable: /bin/bash
+  register: proxmox_maintenance_qemu_list
+  changed_when: false
+  check_mode: false
+
+- name: Refuse maintenance while any Proxmox guest is running
+  ansible.builtin.assert:
+    that:
+      - proxmox_maintenance_lxc_list.stdout | trim | length == 0
+      - proxmox_maintenance_qemu_list.stdout | trim | length == 0
+    fail_msg: >-
+      Refusing host package maintenance while one or more guests are
+      running. Stop or migrate them and retry.
+
+- name: Capture current Proxmox kernel
+  ansible.builtin.command: uname -r
+  register: proxmox_maintenance_kernel_before
+  changed_when: false
+  check_mode: false
+
+- name: Apply Proxmox and Debian package updates
+  ansible.builtin.apt:
+    update_cache: true
+    upgrade: dist
+    autoremove: false
+    fail_on_autoremove: true
+  register: proxmox_maintenance_apt
+
+- name: Check whether the host explicitly requires a reboot
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: proxmox_maintenance_reboot_required
+
+- name: Reboot Proxmox host into updated kernel
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ proxmox_maintenance_reboot_timeout }}"
+    test_command: pveversion
+  when:
+    - proxmox_maintenance_apt.changed or
+      proxmox_maintenance_reboot_required.stat.exists
+
+- name: Validate essential Proxmox services after reboot
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - pveproxy
+      - pvedaemon
+      - pvestatd
+      - ssh
+  changed_when: false
+  check_mode: false
+
+- name: Validate Proxmox host has no failed units after reboot
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - --failed
+      - --no-legend
+  register: proxmox_maintenance_failed_units
+  changed_when: false
+  check_mode: false
+  failed_when: proxmox_maintenance_failed_units.stdout | trim | length > 0

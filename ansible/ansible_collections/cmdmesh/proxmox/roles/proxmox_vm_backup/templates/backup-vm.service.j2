@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup for Proxmox guest {{ item.vmid }} ({{ item.name }})
+After=pve-cluster.service
+
+[Service]
+Type=oneshot
+UMask=0022
+ExecStart=/usr/bin/flock -n /run/lock/cmdmesh-vm-backup-{{ item.vmid }}.lock /usr/local/sbin/cmdmesh-backup-proxmox-vm {{ item.vmid }} {{ item.keep_last }} {{ item.name }} {{ item.guest_type | default('qemu') }}

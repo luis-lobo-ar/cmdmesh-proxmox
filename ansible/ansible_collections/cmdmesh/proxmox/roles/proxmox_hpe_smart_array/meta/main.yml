@@ -1,0 +1,3 @@
+---
+dependencies:
+  - role: cmdmesh.proxmox.operation_guard

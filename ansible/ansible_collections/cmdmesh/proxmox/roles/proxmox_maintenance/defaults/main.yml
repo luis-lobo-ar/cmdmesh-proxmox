@@ -1,0 +1,6 @@
+---
+proxmox_maintenance_enabled: false
+proxmox_maintenance_reboot: false
+proxmox_maintenance_reboot_timeout: 900
+proxmox_maintenance_blocked_reason: ""
+proxmox_maintenance_assessment_only: true

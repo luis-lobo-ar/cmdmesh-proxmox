@@ -1,0 +1,8 @@
+---
+- name: Require explicit permission outside check mode
+  ansible.builtin.assert:
+    that:
+      - ansible_check_mode or (cmdmesh_allow_changes | default(false) | bool)
+    fail_msg: >-
+      Changes are disabled. Use --check for assessment; an approved operation
+      must explicitly set cmdmesh_allow_changes=true.

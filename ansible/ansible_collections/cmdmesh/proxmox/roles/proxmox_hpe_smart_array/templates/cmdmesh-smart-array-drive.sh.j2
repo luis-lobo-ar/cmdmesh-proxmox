@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly CONTROLLER_SLOT={{ proxmox_hpe_smart_array_controller_slot | quote }}
+
+{% raw %}
+usage() {
+  cat >&2 <<'EOF'
+Usage:
+  cmdmesh-smart-array-drive --inventory
+  cmdmesh-smart-array-drive --show --serial SERIAL
+  cmdmesh-smart-array-drive --locate-on --serial SERIAL --confirm LOCATE-ON:SERIAL
+  cmdmesh-smart-array-drive --locate-off --serial SERIAL
+
+This tool can inventory a controller, show one drive, or control only its
+locator LED. It cannot remove drives or modify arrays.
+EOF
+  exit 2
+}
+
+resolve_ssacli() {
+  if command -v ssacli >/dev/null 2>&1; then
+    command -v ssacli
+  elif [[ -x /opt/smartstorageadmin/ssacli/bin/ssacli ]]; then
+    printf '%s\n' /opt/smartstorageadmin/ssacli/bin/ssacli
+  else
+    echo "ssacli is not installed" >&2
+    exit 1
+  fi
+}
+
+mode=""
+serial=""
+confirmation=""
+
+while (($#)); do
+  case "$1" in
+    --inventory|--show|--locate-on|--locate-off)
+      [[ -z "$mode" ]] || usage
+      mode="$1"
+      shift
+      ;;
+    --serial)
+      (($# >= 2)) || usage
+      serial="$2"
+      shift 2
+      ;;
+    --confirm)
+      (($# >= 2)) || usage
+      confirmation="$2"
+      shift 2
+      ;;
+    *) usage ;;
+  esac
+done
+
+[[ -n "$mode" ]] || usage
+SSACLI="$(resolve_ssacli)"
+readonly SSACLI
+
+if [[ "$mode" == --inventory ]]; then
+  "$SSACLI" ctrl slot="$CONTROLLER_SLOT" show config detail
+  "$SSACLI" ctrl slot="$CONTROLLER_SLOT" pd all show detail
+  exit 0
+fi
+
+[[ "$serial" =~ ^[A-Za-z0-9._-]+$ ]] || {
+  echo "serial must contain only letters, numbers, dot, underscore, or dash" >&2
+  exit 2
+}
+
+inventory="$($SSACLI ctrl slot="$CONTROLLER_SLOT" pd all show detail)"
+mapfile -t addresses < <(
+  awk -v wanted="$serial" '
+    /^[[:space:]]*physicaldrive[[:space:]]+/ { address=$2 }
+    /^[[:space:]]*Serial Number:/ {
+      value=$0
+      sub(/^[[:space:]]*Serial Number:[[:space:]]*/, "", value)
+      if (value == wanted) print address
+    }
+  ' <<<"$inventory"
+)
+
+if [[ ${#addresses[@]} -ne 1 ]]; then
+  echo "expected exactly one Smart Array drive with serial $serial; found ${#addresses[@]}" >&2
+  exit 1
+fi
+
+readonly address="${addresses[0]}"
+printf 'serial=%s controller_slot=%s physical_drive=%s\n' \
+  "$serial" "$CONTROLLER_SLOT" "$address"
+
+case "$mode" in
+  --show)
+    "$SSACLI" ctrl slot="$CONTROLLER_SLOT" pd "$address" show detail
+    ;;
+  --locate-on)
+    [[ "$confirmation" == "LOCATE-ON:$serial" ]] || {
+      echo "refusing locator mutation; expected --confirm LOCATE-ON:$serial" >&2
+      exit 2
+    }
+    "$SSACLI" ctrl slot="$CONTROLLER_SLOT" pd "$address" modify led=on
+    ;;
+  --locate-off)
+    "$SSACLI" ctrl slot="$CONTROLLER_SLOT" pd "$address" modify led=off
+    ;;
+  *) usage ;;
+esac
+{% endraw %}

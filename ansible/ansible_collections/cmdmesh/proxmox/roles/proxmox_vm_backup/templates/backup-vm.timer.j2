@@ -1,0 +1,11 @@
+[Unit]
+Description=Schedule backup for Proxmox guest {{ item.vmid }} ({{ item.name }})
+
+[Timer]
+OnCalendar={{ item.on_calendar }}
+Persistent=true
+RandomizedDelaySec=15m
+Unit=cmdmesh-vm-backup-{{ item.name }}.service
+
+[Install]
+WantedBy=timers.target

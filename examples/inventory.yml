@@ -1,0 +1,18 @@
+all:
+  children:
+    cmdmesh_targets:
+      hosts:
+        node-a:
+          ansible_host: 192.0.2.10
+          ansible_user: operator
+          proxmox_node: node-a
+          lifecycle_owner: ansible
+    guests:
+      hosts:
+        demo:
+          proxmox_node: node-a
+          proxmox_vmid: 101
+          lifecycle_owner: ansible
+          proxmox_lxc_memory_mb: 2048
+          proxmox_lxc_swap_mb: 512
+          proxmox_lxc_rootfs_size_gb: 16

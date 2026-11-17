@@ -1,0 +1,26 @@
+---
+- name: Require exactly one explicitly targeted host
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | length == 1
+
+- name: Inspect current Proxmox version for assessment
+  ansible.builtin.command: pveversion
+  changed_when: false
+  check_mode: false
+
+- name: Inspect running guests for assessment
+  ansible.builtin.command:
+    argv: ["{{ item }}", list]
+  loop: [pct, qm]
+  changed_when: false
+  check_mode: false
+
+- name: Report assessment does not authorize upgrades or reboot
+  ansible.builtin.debug:
+    msg: Assessment only. No packages changed and no guests stopped.
+  when: proxmox_maintenance_assessment_only | bool
+
+- name: Perform explicitly authorized maintenance
+  ansible.builtin.include_tasks: apply.yml
+  when: not (proxmox_maintenance_assessment_only | bool)

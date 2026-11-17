@@ -1,0 +1,23 @@
+---
+- name: Require explicit Ansible ownership and guest selection
+  ansible.builtin.assert:
+    that:
+      - lifecycle_owner | default('') == 'ansible'
+      - proxmox_node is defined
+      - proxmox_lxc_storage_guests | length > 0
+      - proxmox_lxc_storage_guests is not string
+
+- name: Validate selected guest identity and ownership
+  ansible.builtin.assert:
+    that:
+      - item in hostvars
+      - hostvars[item].proxmox_node | default('') == proxmox_node
+      - hostvars[item].proxmox_vmid | default('') | string is match('^[1-9][0-9]{2,8}$')
+      - hostvars[item].lifecycle_owner | default(lifecycle_owner) == 'ansible'
+  loop: "{{ proxmox_lxc_storage_guests }}"
+
+- name: Operate only on explicitly selected guests
+  ansible.builtin.include_tasks: guest.yml
+  loop: "{{ proxmox_lxc_storage_guests }}"
+  loop_control:
+    loop_var: proxmox_lxc_storage_guest

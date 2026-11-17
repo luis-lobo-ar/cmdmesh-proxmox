@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly CONTROLLER_SLOT={{ proxmox_hpe_smart_array_controller_slot | quote }}
+readonly SMART_DEVICE={{ proxmox_hpe_smart_array_smart_device | quote }}
+SSACLI="$(command -v ssacli || true)"
+readonly SSACLI
+
+{% raw %}
+[[ -n "$SSACLI" ]] || {
+  echo "ssacli is not installed" >&2
+  exit 1
+}
+
+printf 'generated_at=%s\n' "$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
+printf 'hostname=%s\n' "$(hostname --fqdn)"
+printf 'system_product=%s\n' "$(dmidecode -s system-product-name)"
+printf 'system_serial=%s\n' "$(dmidecode -s system-serial-number)"
+
+echo
+echo '### Controller status'
+"$SSACLI" ctrl slot="$CONTROLLER_SLOT" show status
+
+echo
+echo '### Controller configuration'
+"$SSACLI" ctrl slot="$CONTROLLER_SLOT" show config detail
+
+echo
+echo '### Physical-drive detail'
+"$SSACLI" ctrl slot="$CONTROLLER_SLOT" pd all show detail
+
+echo
+echo '### SMART summaries through hpsa passthrough'
+for index in $(seq 0 31); do
+  output="$(smartctl -i -A -d "cciss,$index" "$SMART_DEVICE" 2>&1 || true)"
+  if grep -q '^Serial Number:' <<<"$output"; then
+    printf '\ncontroller_index=%s\n' "$index"
+    grep -E \
+      '^(Device Model|Product|Serial Number|User Capacity|SMART overall-health|SMART Health Status|  5 Reallocated_Sector_Ct|197 Current_Pending_Sector|198 Offline_Uncorrectable)' \
+      <<<"$output" || true
+  fi
+done
+{% endraw %}

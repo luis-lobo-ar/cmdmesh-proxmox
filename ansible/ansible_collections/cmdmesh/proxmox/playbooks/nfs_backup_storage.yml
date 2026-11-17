@@ -1,0 +1,7 @@
+---
+- name: Explicitly targeted backup storage operation
+  hosts: "{{ cmdmesh_target | default('cmdmesh_targets') }}"
+  become: true
+  gather_facts: false
+  roles:
+    - role: cmdmesh.proxmox.proxmox_nfs_backup_storage

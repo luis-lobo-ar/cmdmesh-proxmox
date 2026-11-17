@@ -1,0 +1,79 @@
+---
+- name: Validate explicit root filesystem size before reading guest state
+  ansible.builtin.assert:
+    that:
+      - hostvars[proxmox_lxc_storage_guest].proxmox_lxc_rootfs_size_gb | default('') | string is match('^[1-9][0-9]*(?:\.[0-9]+)?$')
+
+- name: Read current LXC root filesystem config
+  ansible.builtin.command:
+    argv:
+      - pct
+      - config
+      - "{{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }}"
+  register: proxmox_lxc_storage_config
+  changed_when: false
+  check_mode: false
+
+- name: Locate current LXC root filesystem size
+  ansible.builtin.set_fact:
+    proxmox_lxc_storage_size_matches: >-
+      {{
+        proxmox_lxc_storage_config.stdout
+        | regex_findall('(?m)^rootfs:.*?,size=([0-9]+(?:\\.[0-9]+)?)G(?:,|$)')
+      }}
+
+- name: Validate current LXC root filesystem size
+  ansible.builtin.assert:
+    that:
+      - proxmox_lxc_storage_size_matches | length == 1
+    fail_msg: >-
+      Could not determine exactly one rootfs size for LXC
+      {{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }}.
+
+- name: Parse current and desired LXC root filesystem sizes
+  ansible.builtin.set_fact:
+    proxmox_lxc_storage_current_size_gb: >-
+      {{ proxmox_lxc_storage_size_matches | first | float }}
+    proxmox_lxc_storage_desired_size_gb: >-
+      {{ hostvars[proxmox_lxc_storage_guest].proxmox_lxc_rootfs_size_gb | float }}
+
+- name: Reject unsafe LXC root filesystem shrink requests
+  ansible.builtin.assert:
+    that:
+      - >-
+        proxmox_lxc_storage_desired_size_gb | float
+        >= proxmox_lxc_storage_current_size_gb | float
+    fail_msg: >-
+      Refusing to shrink LXC {{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }}
+      from {{ proxmox_lxc_storage_current_size_gb }} GB to
+      {{ proxmox_lxc_storage_desired_size_gb }} GB.
+    success_msg: >-
+      LXC {{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }} root filesystem
+      request is growth-only or unchanged.
+
+- name: Report planned LXC root filesystem growth in check mode
+  ansible.builtin.debug:
+    msg: >-
+      Would grow LXC {{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }} rootfs
+      from {{ proxmox_lxc_storage_current_size_gb }} GB to
+      {{ proxmox_lxc_storage_desired_size_gb }} GB.
+  changed_when: true
+  when:
+    - ansible_check_mode
+    - >-
+      proxmox_lxc_storage_desired_size_gb | float
+      > proxmox_lxc_storage_current_size_gb | float
+
+- name: Grow LXC root filesystem
+  ansible.builtin.command:
+    argv:
+      - pct
+      - resize
+      - "{{ hostvars[proxmox_lxc_storage_guest].proxmox_vmid }}"
+      - rootfs
+      - "{{ hostvars[proxmox_lxc_storage_guest].proxmox_lxc_rootfs_size_gb }}G"
+  when:
+    - not ansible_check_mode
+    - >-
+      proxmox_lxc_storage_desired_size_gb | float
+      > proxmox_lxc_storage_current_size_gb | float
