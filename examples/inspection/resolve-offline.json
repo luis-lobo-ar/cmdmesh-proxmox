@@ -1,0 +1,21 @@
+{
+  "document_type": "cmdmesh.inspection.request",
+  "schema_version": 1,
+  "operation": "target-resolve",
+  "input": {
+    "source": {
+      "mode": "offline",
+      "origin": "example",
+      "snapshot": {
+        "schema_version": 1,
+        "complete": true,
+        "warnings": [],
+        "resources": [
+          {"kind": "proxmox.node", "id": "node-a", "properties": {"status": "online"}},
+          {"kind": "proxmox.lxc", "id": "node-a/101", "properties": {"node": "node-a", "vmid": 101, "name": "demo", "status": "running"}}
+        ]
+      }
+    },
+    "selector": {"origin": "example", "node": "node-a", "kind": "proxmox.lxc", "vmid": 101}
+  }
+}

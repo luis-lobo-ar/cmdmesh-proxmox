@@ -51,6 +51,27 @@ per-request timeout of at most 60 seconds, and a 120-second Linux process deadli
 There are no retries, write endpoints, guest operations or implicit credential
 discovery.
 
+## Exact target inspection
+
+The separate inspection bundle resolves origin/node/kind/VMID with typed input,
+source completeness and freshness, and known failure/recovery guidance. It works
+offline without credentials and can use the existing GET-only API collector for
+live observations. It never selects the first duplicate or turns an offline file
+into live evidence.
+
+```sh
+umask 077
+mkdir -p .generated
+python3 tools/build_inspector.py --out .generated/proxmox-inspect.pyz
+.generated/proxmox-inspect.pyz --input examples/inspection/describe.json
+.generated/proxmox-inspect.pyz --input examples/inspection/resolve-offline.json
+```
+
+The artifact's digest covers its bundled implementation, including reused
+inventory code. See [the inspection guide](docs/inspection.md) for private live
+configuration, exact schemas, trust limits and diagnostic behavior. Other P3
+primitives and the core inspection bridge remain in development.
+
 ## Ansible collection
 
 Install development dependencies in a virtual environment; the API executable
