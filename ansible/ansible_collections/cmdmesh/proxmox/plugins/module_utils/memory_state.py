@@ -1,4 +1,4 @@
-"""Typed memory evidence validation. This module does not collect or mutate state."""
+"""Canonical typed memory evidence and fixed checks; no collection or mutation."""
 
 import copy
 import hashlib
@@ -198,5 +198,173 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
         validation_scope="supplied-evidence-only",
         current_observation=False,
         mutation_authorized=False,
+    )
+    return result
+
+
+def capacity_policy(value):
+    try:
+        keys(value, {"mode", "minimum_remaining_bytes"})
+        if value["mode"] != "observed-available-headroom":
+            raise MemoryEvidenceError("invalid-memory-policy")
+        integer(value["minimum_remaining_bytes"], 0, 2**63 - 1)
+    except MemoryEvidenceError:
+        raise MemoryEvidenceError("invalid-memory-policy", "rejected") from None
+    return value
+
+
+def growth(desired, baseline):
+    try:
+        integer(desired, 16, 2**31 - 1)
+    except MemoryEvidenceError:
+        raise MemoryEvidenceError("invalid-memory-desired", "rejected") from None
+    delta = desired - baseline["configuration"]["memory_mb"]
+    if delta < 0:
+        raise MemoryEvidenceError("memory-growth-required", "rejected")
+    return delta * 1024**2
+
+
+def check_capacity(desired, baseline, fresh, policy):
+    delta = growth(desired, baseline)
+    policy = capacity_policy(policy)
+    if delta == 0:
+        return
+    required = delta + policy["minimum_remaining_bytes"]
+    if required > fresh["host_capacity"]["available_bytes"]:
+        raise MemoryEvidenceError("memory-capacity-insufficient", "rejected")
+
+
+def prepare(request, observation, desired_memory_mb, policy, *, now_ms):
+    """Freeze supplied assertions. The calling live facade owns provenance."""
+    validated = validate_observation(observation, request, now_ms=now_ms)
+    check_capacity(desired_memory_mb, observation, observation, policy)
+    return copy.deepcopy(
+        {
+            "document_type": "cmdmesh.proxmox.lxc-memory.prepared",
+            "schema_version": 1,
+            "request": request,
+            "subject_key": validated["subject_key"],
+            "desired_memory_mb": desired_memory_mb,
+            "change_required": desired_memory_mb
+            != observation["configuration"]["memory_mb"],
+            "capacity_policy": policy,
+            "baseline": observation,
+        }
+    )
+
+
+def validate_prepared(value):
+    keys(
+        value,
+        {
+            "document_type",
+            "schema_version",
+            "request",
+            "subject_key",
+            "desired_memory_mb",
+            "change_required",
+            "capacity_policy",
+            "baseline",
+        },
+        "invalid-memory-prepared",
+    )
+    if (
+        value["document_type"] != "cmdmesh.proxmox.lxc-memory.prepared"
+        or type(value["schema_version"]) is not int
+        or value["schema_version"] != 1
+    ):
+        raise MemoryEvidenceError("invalid-memory-prepared", "rejected")
+    baseline = value["baseline"]
+    if not isinstance(baseline, dict):
+        raise MemoryEvidenceError("invalid-memory-prepared", "rejected")
+    # A frozen historical baseline is validated at its own collection time.
+    # Freshness is required separately for each current pre/post observation.
+    validated = validate_observation(
+        baseline, value["request"], now_ms=baseline.get("observed_at_unix_ms")
+    )
+    if value["subject_key"] != validated["subject_key"]:
+        raise MemoryEvidenceError("invalid-memory-prepared", "rejected")
+    check_capacity(
+        value["desired_memory_mb"], baseline, baseline, value["capacity_policy"]
+    )
+    if type(value["change_required"]) is not bool or value["change_required"] != (
+        value["desired_memory_mb"] != baseline["configuration"]["memory_mb"]
+    ):
+        raise MemoryEvidenceError("invalid-memory-prepared", "rejected")
+    return value
+
+
+def continuity(prepared, fresh, *, now_ms):
+    validate_prepared(prepared)
+    current = validate_observation(fresh, prepared["request"], now_ms=now_ms)
+    before = prepared["baseline"]
+    if fresh["observed_at_unix_ms"] < before["observed_at_unix_ms"]:
+        raise MemoryEvidenceError("memory-evidence-time-unqualified")
+    if fresh["host_boot_id_sha256"] != before["host_boot_id_sha256"]:
+        raise MemoryEvidenceError("memory-host-boot-changed", "rejected")
+    if any(
+        fresh["runtime"][key] != before["runtime"][key]
+        for key in ("init_start_ticks", "pid_namespace_inode")
+    ):
+        raise MemoryEvidenceError("memory-runtime-changed", "rejected")
+    if (
+        current["subject_key"] != prepared["subject_key"]
+        or fresh["tags"] != before["tags"]
+        or fresh["versions"] != before["versions"]
+        or fresh["host_capacity"]["total_bytes"]
+        != before["host_capacity"]["total_bytes"]
+        or any(
+            fresh["configuration"][key] != before["configuration"][key]
+            for key in ("swap_mb", "other_sha256")
+        )
+    ):
+        raise MemoryEvidenceError("memory-unrelated-state-changed", "rejected")
+    return {
+        "document_type": "cmdmesh.proxmox.lxc-memory.checks",
+        "schema_version": 1,
+        "subject_key": prepared["subject_key"],
+        "change_required": prepared["change_required"],
+        "checks": {
+            "host-guest-identity": True,
+            "ownership-generation": True,
+            "host-boot-continuity": True,
+            "runtime-continuity": True,
+            "unchanged-state": True,
+            "fresh-complete": True,
+        },
+        "validation_scope": "supplied-evidence-only",
+        "current_observation": False,
+        "mutation_authorized": False,
+    }
+
+
+def preflight(prepared, fresh, *, now_ms):
+    result = continuity(prepared, fresh, now_ms=now_ms)
+    if fresh["configuration"] != prepared["baseline"]["configuration"]:
+        raise MemoryEvidenceError("memory-preimage-changed", "rejected")
+    check_capacity(
+        prepared["desired_memory_mb"],
+        prepared["baseline"],
+        fresh,
+        prepared["capacity_policy"],
+    )
+    result["phase"] = "preflight"
+    result["checks"].update({"configuration-preimage": True, "capacity-headroom": True})
+    return result
+
+
+def verify(prepared, fresh, *, now_ms):
+    result = continuity(prepared, fresh, now_ms=now_ms)
+    if fresh["configuration"]["memory_mb"] != prepared["desired_memory_mb"]:
+        raise MemoryEvidenceError("memory-postcondition-failed")
+    same_digest = (
+        fresh["configuration"]["digest"]
+        == prepared["baseline"]["configuration"]["digest"]
+    )
+    if same_digest == prepared["change_required"]:
+        raise MemoryEvidenceError("memory-config-digest-unqualified")
+    result["phase"] = "verify"
+    result["checks"].update(
+        {"configuration-target": True, "enforced-memory-target": True}
     )
     return result

@@ -77,6 +77,15 @@ class InspectionBundleTests(unittest.TestCase):
                     archive.read("inventory.py"),
                     (ROOT / "bin/cmdmesh-proxmox").read_bytes(),
                 )
+                for name in ("memory_state.py", "memory_remote.py"):
+                    self.assertEqual(
+                        archive.read(name),
+                        (
+                            ROOT
+                            / "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils"
+                            / name
+                        ).read_bytes(),
+                    )
             result = subprocess.run(
                 [str(first)],
                 input=json.dumps(

@@ -66,7 +66,8 @@ recovery and private adoption have not yet been certified.
 
 ## Typed evidence validation
 
-`inspection/memory_state.py` defines strict version-1
+`ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_state.py`
+defines strict version-1
 `cmdmesh.proxmox.lxc-memory.observation` evidence. `validate_observation` accepts
 an observation, the expected request, controller time and maximum evidence age.
 The expected request contains a request ID, exact origin/node/LXC/VMID selector,
@@ -123,9 +124,9 @@ The verified Ansible procedure remains P4 work.
 
 ## Fixed remote collector
 
-`inspection/memory_remote.py` is standalone standard-library source bundled into
-the live SSH action. It reads
-host identity before running native commands, rejects another node/machine/CA/leaf
+The collection's canonical `plugins/module_utils/memory_remote.py` is standalone
+standard-library source bundled into the live SSH action. It reads host identity
+before running native commands, rejects another node/machine/CA/leaf
 and custom proxy certificates, then reads exact package versions and supported
 Proxmox interfaces. It does not read private keys.
 
@@ -159,3 +160,54 @@ The remote JSON decoder rejects duplicate keys and nonfinite numbers, including
 exponent overflow. The same finite-number fix also hardens the shared inventory and
 inspection decoders: invalid data returns a structured failure rather than
 escaping during serialization. Valid legacy protocol behavior stays unchanged.
+
+## Fixed preparation and pre/post checks
+
+The canonical `module_utils/memory_state.py` also contains pure `prepare`,
+`preflight` and `verify` functions for the next procedure. They are internal
+building blocks, not additional native actions or a completed mutation workflow.
+The deterministic builder embeds their canonical bytes under the existing
+`memory_state.py` and `memory_remote.py` archive names. There are no second
+checked-in helper copies. The remote collector remains standalone source so SSH
+execution does not depend on Ansible or sibling modules being installed remotely.
+
+`prepare` validates supplied initial evidence and freezes a version-1
+`cmdmesh.proxmox.lxc-memory.prepared` document with exactly:
+
+- `request`: exact selector, host profile and owner/generation markers.
+- `subject_key`: stable physical resource identity derived from that evidence.
+- `baseline`: full validated historical observation.
+- `desired_memory_mb`: integer desired ceiling, at least the current value.
+- `change_required`: boolean derived from baseline and desired memory.
+- `capacity_policy`: the explicitly selected headroom policy.
+
+For example, a private policy can be:
+
+```json
+{"mode":"observed-available-headroom","minimum_remaining_bytes":1073741824}
+```
+
+For growth, the required condition is
+`growth_bytes + minimum_remaining_bytes <= fresh MemAvailable`. This is a
+snapshot headroom check. It does not reserve RAM or measure all guest commitments.
+An already-correct desired value is an unchanged result and requires no extra
+headroom. Shrinking is unsupported. The policy is still validated for a no-op.
+
+Every preflight revalidates the prepared document and fresh evidence. Host/guest
+identity, ownership, host boot, init process, versions, host total memory and
+unrelated configuration must match. The full Proxmox configuration digest and
+memory preimage must remain unchanged. Current headroom is checked again for
+growth; the approved variables and baseline are never rewritten with fresh data.
+
+Postchecks require the desired configured and enforced memory, the same running
+guest and host boot, and unchanged unrelated state. Real growth requires a
+different configuration digest; a no-op requires the same one. Volatile free
+memory need not equal its baseline. An unchanged or unenforced limit cannot pass
+because a command exited zero.
+
+Successful pure checks return fixed versioned check IDs and booleans with
+`validation_scope: supplied-evidence-only`, `current_observation: false` and
+`mutation_authorized: false`. A frozen baseline may be historical; each current
+pre/post observation must be fresh and no earlier than it. No caller-supplied
+frame becomes live evidence through these functions. The live facade and core
+procedure must establish provenance, binding, consumed intent and final status.

@@ -1,4 +1,4 @@
-"""Fixed read-only Proxmox host/LXC collector. Standalone standard library source."""
+"""Canonical fixed read-only node/LXC collector; standalone standard library."""
 
 import hashlib
 import json

@@ -16,8 +16,8 @@ SOURCES = {
     "inspection.py": "inspection/inspection.py",
     "inventory.py": "bin/cmdmesh-proxmox",
     "probes.py": "inspection/probes.py",
-    "memory_state.py": "inspection/memory_state.py",
-    "memory_remote.py": "inspection/memory_remote.py",
+    "memory_state.py": "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_state.py",
+    "memory_remote.py": "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_remote.py",
     "memory_collect.py": "inspection/memory_collect.py",
 }
 
