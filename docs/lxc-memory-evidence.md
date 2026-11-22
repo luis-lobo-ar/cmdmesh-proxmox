@@ -52,4 +52,44 @@ not distributed exclusion across administrators or proof of a remote identity.
 `MemoryEvidenceError` exposes a fixed code and outcome, never supplied values.
 The caller must retain failed evidence as unqualified and provide recovery
 guidance. It must not retry, shrink or claim applied/verified success from this
-decoder alone. Live host/guest collection and the Ansible procedure remain P4 work.
+decoder alone. The fixed remote collector below is another building block.
+The live TLS/SSH action and verified Ansible procedure remain P4 work.
+
+## Fixed remote collector
+
+`inspection/memory_remote.py` is standalone standard-library source for a future
+SSH action. It is not registered or included in the native archive yet. It reads
+host identity before running native commands, rejects another node/machine/CA/leaf
+and custom proxy certificates, then reads exact package versions and supported
+Proxmox interfaces. It does not read private keys.
+
+All commands are fixed: package query, `pct help set`, Proxmox GET queries and
+`lxc-info` for the selected numeric ID. No create, set, resize, restart, guest
+execution or arbitrary command input exists. Duplicate IDs, another resource kind,
+missing/locked/pending config, malformed JSON and changing init identity fail.
+The remaining configuration is hashed with only memory and the concurrency digest
+excluded. Raw configuration values are not returned.
+
+The collector follows the init process's host cgroup-v2 membership and reads
+memory limits through its ancestors. A tighter ancestor limit is retained.
+The global root may lack `memory.max`; a non-root missing interface is accepted
+only when controller availability confirms memory is not local there. Missing or
+unlimited evidence never becomes a made-up memory value. See the
+[kernel cgroup hierarchy/interface reference](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html)
+and [LXC PID query reference](https://linuxcontainers.org/lxc/manpages/man1/lxc-info.1.html).
+
+The process uses regular, bounded nonblocking file reads. Native command stdout
+is bounded to 2 MiB and stderr is discarded. A fixed GNU coreutils timeout
+supervisor bounds each command to 10 seconds, and normal/deadline cleanup stops
+the command's owned group. The overall standalone collector has a 45-second
+deadline. It creates no remote scratch files or guest processes.
+
+The caller supplies controller-derived collection time and a correlation ID.
+Those assertions alone establish no live provenance. A complete raw frame still
+requires `memory_state` validation and the authenticated client channel before
+it can contribute to a procedure result.
+
+The remote JSON decoder rejects duplicate keys and nonfinite numbers, including
+exponent overflow. The same finite-number fix also hardens the shared inventory and
+inspection decoders: invalid data returns a structured failure rather than
+escaping during serialization. Valid legacy protocol behavior stays unchanged.

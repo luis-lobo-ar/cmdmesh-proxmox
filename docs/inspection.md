@@ -262,6 +262,10 @@ See Python's [SSL context and in-memory CA data reference](https://docs.python.o
 
 ## Interpret the result
 
+JSON input and API data must use finite representable numbers. Literal NaN or
+Infinity and overflowing exponents such as `1e999` are refused. Malformed numeric
+evidence is not replaced with zero or allowed to escape as a serialization traceback.
+
 All results use `document_type:"cmdmesh.inspection.result"`, schema version 1,
 the requested operation, `outcome`, `data` and `diagnostics`. Diagnostics have
 stable `code`, readable `summary`, `next_checks` and `recovery`. They do not emit

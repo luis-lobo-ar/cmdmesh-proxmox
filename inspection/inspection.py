@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -18,6 +19,15 @@ KINDS = {"proxmox.node", "proxmox.lxc", "proxmox.vm"}
 VERSION = "0.2.0"
 
 GUIDANCE = {
+    "invalid-json": (
+        "The input is not supported JSON",
+        [
+            "Check JSON syntax and finite numbers; NaN, Infinity and overflowing exponents are unsupported"
+        ],
+        [
+            "Correct or recollect the input; do not replace unknown measurements with zero"
+        ],
+    ),
     "invalid-observation": (
         "An observation lacks required typed evidence",
         [
@@ -967,13 +977,22 @@ def dispatch(request, now_ms=None):
         return response(operation, error.outcome, code=error.code)
 
 
+def finite_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError()
+    return parsed
+
+
 def load_json(stream):
     raw = stream.read(MAX_INPUT_BYTES + 1)
     if len(raw) > MAX_INPUT_BYTES:
         raise InspectionError("input-too-large")
     try:
         return json.loads(
-            raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+            raw,
+            parse_float=finite_float,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
         )
     except (ValueError, UnicodeError):
         raise InspectionError("invalid-json") from None

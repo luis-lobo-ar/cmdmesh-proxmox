@@ -24,6 +24,29 @@ SCRATCH.mkdir(parents=True, exist_ok=True, mode=0o700)
 
 
 class InventoryTests(unittest.TestCase):
+    def test_overflow_fixture_emits_structured_incomplete_json_instead_of_a_traceback(
+        self,
+    ):
+        with tempfile.TemporaryDirectory(dir=SCRATCH) as directory:
+            fixture = Path(directory) / "overflow.json"
+            for number in ("1e999", "-1e999"):
+                fixture.write_text(
+                    '{"schema_version":1,"complete":true,"resources":[{"kind":"proxmox.node","id":"node-a","properties":{"cpu":'
+                    + number
+                    + '}}],"warnings":[]}'
+                )
+                result = subprocess.run(
+                    ["python3", str(CLI), "--fixture", str(fixture)],
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(result.stderr, "")
+                response = json.loads(result.stdout)
+                self.assertFalse(response["complete"])
+                self.assertEqual(response["resources"], [])
+
     @classmethod
     def setUpClass(cls):
         cls.work = tempfile.TemporaryDirectory(dir=SCRATCH)
