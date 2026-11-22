@@ -165,6 +165,14 @@ class MemoryDriverTests(unittest.TestCase):
 
     def test_real_timeout_supervisor_preserves_unknown_command_outcome(self):
         command = self.driver.memory_remote.command
+        processes = []
+        launch = self.driver.memory_remote.subprocess.Popen
+
+        def observed_launch(*args, **kwargs):
+            process = launch(*args, **kwargs)
+            processes.append(process)
+            return process
+
         with mock.patch.object(
             self.driver.memory_remote, "COMMAND_TIMEOUT_SECONDS", 0.1
         ):
@@ -181,13 +189,45 @@ class MemoryDriverTests(unittest.TestCase):
                     [sys.executable, "-I", "-c", "import time;time.sleep(30)"]
                 ),
             ) as dispatched:
-                with self.assertRaises(self.driver.MemoryChangeError) as raised:
-                    self.driver.execute(
-                        prepared(), check_mode=False, allow_changes=True
-                    )
+                with mock.patch.object(
+                    self.driver.memory_remote.subprocess,
+                    "Popen",
+                    side_effect=observed_launch,
+                ):
+                    with self.assertRaises(self.driver.MemoryChangeError) as raised:
+                        self.driver.execute(
+                            prepared(), check_mode=False, allow_changes=True
+                        )
+        self.assertTrue(raised.exception.mutation_attempted)
+        self.assertEqual(
+            raised.exception.command_outcome,
+            "unknown",
+            {
+                "aggregate_statuses": [p.returncode for p in processes],
+                "code": raised.exception.code,
+            },
+        )
+        self.assertEqual(dispatched.call_count, 1)
+
+    def test_reserved_timeout_exit_status_preserves_unknown_outcome(self):
+        command = self.driver.memory_remote.command
+        with mock.patch.object(
+            self.driver.memory_remote,
+            "collect",
+            return_value={**observation(), "observed_at_unix_ms": 210000},
+        ), mock.patch.object(
+            self.driver.time, "time_ns", return_value=210000 * 1000000
+        ), mock.patch.object(
+            self.driver.memory_remote,
+            "command",
+            side_effect=lambda _args: command(
+                ["/usr/bin/python3", "-I", "-c", "raise SystemExit(124)"]
+            ),
+        ):
+            with self.assertRaises(self.driver.MemoryChangeError) as raised:
+                self.driver.execute(prepared(), check_mode=False, allow_changes=True)
         self.assertTrue(raised.exception.mutation_attempted)
         self.assertEqual(raised.exception.command_outcome, "unknown")
-        self.assertEqual(dispatched.call_count, 1)
 
 
 @unittest.skipUnless(

@@ -76,6 +76,10 @@ and reconcile actual state before another
 authorized attempt. Invocation details withhold the prepared document without
 censoring the returned correlation hash.
 
+Reserved timeout status 124 and signal-style termination are conservatively
+unknown. A native command can reuse those statuses, so the driver does not infer
+its final effects from them. See the [GNU timeout exit contract](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html).
+
 Native commands have ten-second supervisors; the module has a 120-second outer
 deadline. Controller interruption does not prove remote termination. Initial
 local tests cover the driver with synthetic native reads, plus actual Ansible

@@ -104,7 +104,11 @@ def command(argv):
             status = process.poll()
             if status is not None:
                 drain(process.stdout, result)
-                if status < 0 or status in (128 + signal.SIGKILL, 128 + signal.SIGTERM):
+                if status < 0 or status in (
+                    124,
+                    128 + signal.SIGKILL,
+                    128 + signal.SIGTERM,
+                ):
                     raise RemoteObservationError("remote-memory-command-interrupted")
                 if status != 0:
                     raise RemoteObservationError("remote-memory-command-failed")
