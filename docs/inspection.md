@@ -5,7 +5,8 @@ the target. It matches an explicit origin, node, resource kind and numeric VMID,
 then reports whether the evidence is complete, recent and live or merely an
 offline assertion. It does not authorize a change or prove application health.
 
-The current standalone actions are `describe` and `target-resolve`. Other P3
+The current standalone actions are `describe`, `target-resolve` and
+`observation-compare`. Other P3
 primitives and the core CLI/MCP inspection bridge are subsequent work. Do not
 register this archive as the legacy inventory executable: their protocols differ.
 
@@ -98,6 +99,58 @@ Collection uses multiple API requests and is not an atomic cluster snapshot.
 token ACLs exposed every expected resource. `source.visibility_qualified` remains
 false until an independent workflow qualifies expected coverage. A matching live
 target can still be a current observation within the reported scope.
+
+## Compare before and after observations
+
+`observation-compare` checks two supplied `cmdmesh.proxmox.observation` version-1
+documents. It does not contact a host or prove who collected those documents.
+Its result remains `provenance: caller-asserted`, `current_observation: false`
+and `mutation_authorized: false`, even when the comparison matches.
+
+Run the synthetic capacity-change example with your built inspector:
+
+```sh
+python3 examples/inspection/compare.py | .generated/proxmox-inspect.pyz
+```
+
+Expect `outcome: observed`, `comparison: matches` and `accepted_deltas: 1`.
+The example changes no infrastructure. It supplies one exact allowed transition
+for LXC 101's `maxmem`, from 1024 to 2048. Omitting or changing that transition
+rejects the comparison. The result does not authorize a resize.
+
+Use `describe` for the complete input schema. Each observation requires origin,
+node, collection time, hostname, a package digest, protected-file digests,
+APT-file digests, three management service states, and an inventory snapshot.
+The snapshot must contain exactly the selected node and its guests. Every
+resource requires numeric nonnegative uptime and status; guests also require
+name, node and integer VMID. Duplicate identities fail before map construction.
+Zero guests is valid with complete node evidence. Empty protected-file evidence
+is invalid; an empty APT list is valid when collection is complete.
+
+Both observations must be complete, free of warnings, ordered, not future-dated,
+and within `max_age_seconds` (default 60, maximum 86400). Management services
+must be active and the node online. Missing evidence cannot become a default.
+Nondecreasing uptime is expected. Decreasing uptime, resource membership and
+other field changes require exact permitted deltas.
+
+Each delta has `path`, `before` and `after`. Paths are arrays of literal segments:
+
+| Evidence | Path |
+| --- | --- |
+| Package set | `["packages_sha256"]` |
+| Hostname | `["hostname"]` |
+| One protected or APT file | `["protected", "/etc/hosts"]` or `["apt_lists", "/absolute/file"]` |
+| One management service | `["services", "pveproxy"]` |
+| One resource property | `["resources", "proxmox.lxc", "node-a/101", "maxmem"]` |
+| Whole resource addition/removal | `["resources", "proxmox.lxc", "node-a/101"]` |
+
+For membership changes, the value is the complete resource properties object,
+with `null` on the absent side. Duplicate, unused, wildcard or mismatched deltas
+fail. At most 1000 deltas are accepted. Origin/node changes cannot be permitted.
+Expected service downtime still returns incomplete management health.
+Private workflows must establish ownership and collect evidence through a
+trusted channel before using this comparison as one postcondition. A matching
+comparison alone proves neither application availability nor recoverability.
 
 ## Interpret the result
 

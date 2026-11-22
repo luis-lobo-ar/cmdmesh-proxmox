@@ -18,6 +18,56 @@ KINDS = {"proxmox.node", "proxmox.lxc", "proxmox.vm"}
 VERSION = "0.2.0"
 
 GUIDANCE = {
+    "invalid-observation": (
+        "An observation lacks required typed evidence",
+        [
+            "Check the observation schema, package/file hashes, required resource fields and numeric uptimes"
+        ],
+        [
+            "Recollect a complete observation; do not insert defaults for missing evidence"
+        ],
+    ),
+    "unexpected-delta": (
+        "Observed changes differ from the exact permitted deltas",
+        [
+            "Compare the supplied before/after files and the reviewed path, before and after values"
+        ],
+        [
+            "Investigate the difference before dependent work; do not widen the scope with wildcards"
+        ],
+    ),
+    "unused-permitted-delta": (
+        "A permitted delta did not occur",
+        ["Check the exact resource, field and expected transition"],
+        [
+            "Reconcile the operation result; a command exit code does not prove the intended change"
+        ],
+    ),
+    "observation-incomplete": (
+        "A supplied observation is incomplete or warned",
+        ["Check collection permissions, node coverage and collector exit status"],
+        [
+            "Recollect through the trusted channel; do not convert missing resources into deletion"
+        ],
+    ),
+    "observation-time-not-qualified": (
+        "Observation times are future, stale or out of order",
+        [
+            "Check collector/controller clocks, frame order and the explicit max_age_seconds"
+        ],
+        [
+            "Recollect current evidence; never rewrite a timestamp to make old evidence current"
+        ],
+    ),
+    "management-not-healthy": (
+        "Proxmox management evidence is not healthy",
+        [
+            "Check the selected node status and pveproxy, pvedaemon and pve-cluster service states"
+        ],
+        [
+            "Investigate through the established access path; comparison does not restart services"
+        ],
+    ),
     "origin-mismatch": (
         "The requested origin differs from the selected source",
         [
@@ -284,9 +334,336 @@ def describe():
                     "Offline assertions are never live observations",
                     "Collection completeness does not prove all token ACL visibility",
                 ],
-            }
+            },
+            {
+                "id": "observation-compare",
+                "aliases": ["compare host before and after", "check permitted changes"],
+                "input_schema": comparison_schema(),
+                "expected_result": "Complete same-origin/node observations match exactly declared deltas; caller assertions never authorize mutation",
+                "known_failures": [
+                    "duplicate-resource",
+                    "invalid-observation",
+                    "unexpected-delta",
+                    "unused-permitted-delta",
+                    "observation-incomplete",
+                    "observation-time-not-qualified",
+                ],
+                "recovery": "Recollect missing evidence or review an exact delta; never ignore a wildcard scope or retry uncertain mutations",
+                "limits": [
+                    "Comparison validates supplied evidence, not its remote authenticity",
+                    "No application availability or backup recoverability claim",
+                ],
+            },
         ],
     }
+
+
+def comparison_schema():
+    identifier = {"type": "string", "pattern": NAME.pattern}
+    digest = {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+    hashes = {"type": "object", "maxProperties": 10000, "additionalProperties": digest}
+    uptime = {"type": "integer", "minimum": 0, "maximum": 2**63 - 1}
+    scalar = {
+        "anyOf": [
+            {"type": "string", "maxLength": 512},
+            {"type": "integer"},
+            {"type": "number", "exclusiveMinimum": -1e308, "exclusiveMaximum": 1e308},
+            {"type": "boolean"},
+        ]
+    }
+    common = {"status": identifier, "uptime": uptime, "node": identifier}
+    node_properties = {
+        "type": "object",
+        "properties": common,
+        "required": ["status", "uptime"],
+        "maxProperties": 128,
+        "propertyNames": identifier,
+        "additionalProperties": scalar,
+        "not": {"required": ["vmid"]},
+    }
+    guest_properties = {
+        "type": "object",
+        "properties": {
+            **common,
+            "name": identifier,
+            "vmid": {"type": "integer", "minimum": 100, "maximum": 999999999},
+        },
+        "required": ["node", "vmid", "name", "status", "uptime"],
+        "maxProperties": 128,
+        "propertyNames": identifier,
+        "additionalProperties": scalar,
+    }
+    inventory_schema = target_schema()["properties"]["source"]["oneOf"][0][
+        "properties"
+    ]["snapshot"]
+    inventory_schema["properties"]["resources"]["items"] = {
+        "oneOf": [
+            object_schema(
+                {
+                    "kind": {"const": "proxmox.node"},
+                    "id": identifier,
+                    "properties": node_properties,
+                },
+                ["kind", "id", "properties"],
+            ),
+            object_schema(
+                {
+                    "kind": {"enum": ["proxmox.lxc", "proxmox.vm"]},
+                    "id": {
+                        "type": "string",
+                        "pattern": r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}/[0-9]{3,9}$",
+                    },
+                    "properties": guest_properties,
+                },
+                ["kind", "id", "properties"],
+            ),
+        ]
+    }
+    services = object_schema(
+        {key: identifier for key in ("pveproxy", "pvedaemon", "pve-cluster")},
+        ["pveproxy", "pvedaemon", "pve-cluster"],
+    )
+    frame = object_schema(
+        {
+            "document_type": {"const": "cmdmesh.proxmox.observation"},
+            "schema_version": {"const": 1},
+            "origin": identifier,
+            "node": identifier,
+            "observed_at_unix_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 2**63 - 1,
+            },
+            "hostname": identifier,
+            "packages_sha256": digest,
+            "protected": {**hashes, "minProperties": 1},
+            "apt_lists": hashes,
+            "services": services,
+            "snapshot": inventory_schema,
+        },
+        [
+            "document_type",
+            "schema_version",
+            "origin",
+            "node",
+            "observed_at_unix_ms",
+            "hostname",
+            "packages_sha256",
+            "protected",
+            "apt_lists",
+            "services",
+            "snapshot",
+        ],
+    )
+    return object_schema(
+        {
+            "before": frame,
+            "after": frame,
+            "max_age_seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 86400,
+                "default": 60,
+            },
+            "permitted_deltas": {
+                "type": "array",
+                "maxItems": 1000,
+                "items": object_schema(
+                    {
+                        "path": {
+                            "type": "array",
+                            "minItems": 1,
+                            "maxItems": 4,
+                            "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 4096,
+                            },
+                        },
+                        "before": {},
+                        "after": {},
+                    },
+                    ["path", "before", "after"],
+                ),
+            },
+        },
+        ["before", "after"],
+    )
+
+
+def observation(value):
+    fields = {
+        "document_type",
+        "schema_version",
+        "origin",
+        "node",
+        "observed_at_unix_ms",
+        "hostname",
+        "packages_sha256",
+        "protected",
+        "apt_lists",
+        "services",
+        "snapshot",
+    }
+    keys(value, fields, code="invalid-observation")
+    if value["document_type"] != "cmdmesh.proxmox.observation":
+        raise InspectionError("invalid-observation")
+    if type(value["schema_version"]) is not int or value["schema_version"] != 1:
+        raise InspectionError("unsupported-observation-schema", "unsupported")
+    for key in ("origin", "node", "hostname"):
+        name(value[key], "invalid-observation")
+    integer(value["observed_at_unix_ms"], 0, 2**63 - 1, "invalid-observation")
+    if not isinstance(value["packages_sha256"], str) or not re.fullmatch(
+        r"[a-f0-9]{64}", value["packages_sha256"]
+    ):
+        raise InspectionError("invalid-observation")
+    for key in ("protected", "apt_lists"):
+        mapping = value[key]
+        if (
+            not isinstance(mapping, dict)
+            or len(mapping) > 10000
+            or (key == "protected" and not mapping)
+        ):
+            raise InspectionError("invalid-observation")
+        for path, digest in mapping.items():
+            if (
+                not isinstance(path, str)
+                or len(path) > 4096
+                or not path.startswith("/")
+                or any(ord(c) < 32 for c in path)
+                or ".." in path.split("/")
+                or not isinstance(digest, str)
+                or not re.fullmatch(r"[a-f0-9]{64}", digest)
+            ):
+                raise InspectionError("invalid-observation")
+    keys(
+        value["services"],
+        {"pveproxy", "pvedaemon", "pve-cluster"},
+        code="invalid-observation",
+    )
+    for state in value["services"].values():
+        name(state, "invalid-observation")
+    resources = snapshot(value["snapshot"])
+    nodes = [row for row in resources if row["kind"] == "proxmox.node"]
+    if len(nodes) != 1 or nodes[0]["id"] != value["node"]:
+        raise InspectionError("missing-node-evidence")
+    for row in resources:
+        properties = row["properties"]
+        if row["kind"] != "proxmox.node":
+            if properties["node"] != value["node"]:
+                raise InspectionError("origin-mismatch")
+            name(properties.get("name"), "invalid-observation")
+        name(properties.get("status"), "invalid-observation")
+        integer(properties.get("uptime"), 0, 2**63 - 1, "invalid-observation")
+        if len(properties) > 128:
+            raise InspectionError("invalid-observation")
+        for key, item in properties.items():
+            name(key, "invalid-observation")
+            if (
+                type(item) not in (str, int, float, bool)
+                or (isinstance(item, str) and len(item) > 512)
+                or (type(item) is float and not (-1e308 < item < 1e308))
+            ):
+                raise InspectionError("invalid-observation")
+    return {(row["kind"], row["id"]): row["properties"] for row in resources}
+
+
+def canonical(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def comparison_deltas(before, after, old_resources, new_resources):
+    deltas = {}
+    for field in ("hostname", "packages_sha256"):
+        if before[field] != after[field]:
+            deltas[(field,)] = (before[field], after[field])
+    for field in ("protected", "apt_lists", "services"):
+        for key in before[field].keys() | after[field].keys():
+            old, new = before[field].get(key), after[field].get(key)
+            if old != new:
+                deltas[(field, key)] = (old, new)
+    for identity in old_resources.keys() | new_resources.keys():
+        old, new = old_resources.get(identity), new_resources.get(identity)
+        path = ("resources", *identity)
+        if old is None or new is None:
+            deltas[path] = (old, new)
+            continue
+        for field in old.keys() | new.keys():
+            left, right = old.get(field), new.get(field)
+            if field == "uptime" and right >= left:
+                continue
+            if canonical(left) != canonical(right):
+                deltas[(*path, field)] = (left, right)
+    return deltas
+
+
+def compare_observations(value, now_ms):
+    keys(value, {"before", "after"}, {"permitted_deltas", "max_age_seconds"})
+    before, after = value["before"], value["after"]
+    old_resources, new_resources = observation(before), observation(after)
+    if any(before[key] != after[key] for key in ("origin", "node")):
+        raise InspectionError("origin-mismatch")
+    max_age = value.get("max_age_seconds", 60)
+    integer(max_age, 1, 86400)
+    if not before["observed_at_unix_ms"] <= after["observed_at_unix_ms"] <= now_ms:
+        raise InspectionError("observation-time-not-qualified", "incomplete")
+    if now_ms - before["observed_at_unix_ms"] > max_age * 1000:
+        raise InspectionError("observation-time-not-qualified", "incomplete")
+    for frame in (before, after):
+        if not frame["snapshot"]["complete"] or frame["snapshot"]["warnings"]:
+            raise InspectionError("observation-incomplete", "incomplete")
+        if any(state != "active" for state in frame["services"].values()):
+            raise InspectionError("management-not-healthy", "incomplete")
+        node = next(
+            row
+            for row in frame["snapshot"]["resources"]
+            if row["kind"] == "proxmox.node"
+        )
+        if node["properties"]["status"] != "online":
+            raise InspectionError("management-not-healthy", "incomplete")
+    expected = value.get("permitted_deltas", [])
+    if not isinstance(expected, list) or len(expected) > 1000:
+        raise InspectionError("invalid-permitted-delta")
+    deltas = comparison_deltas(before, after, old_resources, new_resources)
+    accepted = set()
+    for item in expected:
+        keys(item, {"path", "before", "after"}, code="invalid-permitted-delta")
+        path = item["path"]
+        if (
+            not isinstance(path, list)
+            or not 1 <= len(path) <= 4
+            or not all(
+                isinstance(part, str) and 0 < len(part) <= 4096 and "*" not in part
+                for part in path
+            )
+        ):
+            raise InspectionError("invalid-permitted-delta")
+        path = tuple(path)
+        if path in accepted:
+            raise InspectionError("duplicate-permitted-delta")
+        if path not in deltas:
+            raise InspectionError("unused-permitted-delta")
+        if canonical(deltas[path]) != canonical([item["before"], item["after"]]):
+            raise InspectionError("unexpected-delta")
+        accepted.add(path)
+    if deltas.keys() != accepted:
+        raise InspectionError("unexpected-delta")
+    return response(
+        "observation-compare",
+        "observed",
+        {
+            "comparison": "matches",
+            "origin": before["origin"],
+            "node": before["node"],
+            "provenance": "caller-asserted",
+            "current_observation": False,
+            "mutation_authorized": False,
+            "accepted_deltas": len(accepted),
+            "guests": sum(kind != "proxmox.node" for kind, _ in new_resources),
+            "before_sha256": hashlib.sha256(canonical(before).encode()).hexdigest(),
+            "after_sha256": hashlib.sha256(canonical(after).encode()).hexdigest(),
+        },
+    )
 
 
 def selector(value):
@@ -565,6 +942,11 @@ def dispatch(request, now_ms=None):
             return resolve_target(
                 request["input"],
                 request["config"],
+                now_ms if now_ms is not None else time.time_ns() // 1000000,
+            )
+        if operation == "observation-compare":
+            return compare_observations(
+                request["input"],
                 now_ms if now_ms is not None else time.time_ns() // 1000000,
             )
         raise InspectionError("unsupported-operation", "unsupported")
