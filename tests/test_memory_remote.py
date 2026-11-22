@@ -44,6 +44,7 @@ class MemoryRemoteTests(unittest.TestCase):
         data = {
             "/proc/sys/kernel/hostname": "node-a\n",
             "/etc/machine-id": "1234567890abcdef" * 2 + "\n",
+            "/proc/sys/kernel/random/boot_id": "12345678-1234-5678-9abc-def012345678\n",
             "/proc/meminfo": "MemTotal: 16777216 kB\nMemAvailable: 8388608 kB\n",
             "/proc/500/stat": "500 (init with ) spaces) S "
             + "0 " * 18
@@ -108,6 +109,10 @@ class MemoryRemoteTests(unittest.TestCase):
         self.assertEqual(result["configuration"]["memory_mb"], 256)
         self.assertEqual(result["runtime"]["memory_limit_bytes"], 256 * 1024**2)
         self.assertEqual(result["runtime"]["init_start_ticks"], 100)
+        self.assertEqual(
+            result["host_boot_id_sha256"],
+            hashlib.sha256(b"12345678-1234-5678-9abc-def012345678").hexdigest(),
+        )
         self.assertEqual(result["host_capacity"]["available_bytes"], 8 * 1024**3)
         self.assertTrue(
             all(
@@ -116,6 +121,39 @@ class MemoryRemoteTests(unittest.TestCase):
             )
         )
         self.assertFalse(any(path.endswith(".key") for path in self.reads))
+
+    def test_missing_malformed_or_changing_host_boot_identity_is_rejected(self):
+        original = self.read
+        for invalid in ("", "not-a-uuid", "00000000-0000-0000-0000-000000000000"):
+            with self.subTest(invalid=invalid), mock.patch.object(
+                self,
+                "read",
+                side_effect=lambda path: (
+                    invalid
+                    if str(path) == "/proc/sys/kernel/random/boot_id"
+                    else original(path)
+                ),
+            ):
+                with self.assertRaises(self.remote.RemoteObservationError):
+                    self.collect()
+        reads = iter(
+            (
+                "12345678-1234-5678-9abc-def012345678",
+                "22345678-1234-5678-9abc-def012345678",
+            )
+        )
+        with mock.patch.object(
+            self,
+            "read",
+            side_effect=lambda path: (
+                next(reads)
+                if str(path) == "/proc/sys/kernel/random/boot_id"
+                else original(path)
+            ),
+        ):
+            with self.assertRaises(self.remote.RemoteObservationError) as raised:
+                self.collect()
+        self.assertEqual(raised.exception.code, "remote-memory-host-boot-changed")
 
     def test_wrong_host_is_rejected_before_any_native_command(self):
         self.expected["selector"]["node"] = "node-b"

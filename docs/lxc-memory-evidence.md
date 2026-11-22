@@ -78,6 +78,7 @@ Required evidence has these fields:
 | --- | --- |
 | Identity | `request_id`, `origin`, `node`, `kind`, integer `vmid` |
 | `host_profile` | SHA-256 fingerprints for machine ID, private CA and served node leaf |
+| `host_boot_id_sha256` | SHA-256 of the actual host kernel boot ID, stable across collection |
 | `tags` | Actual `cmdmesh-ansible`, one `cmdmesh-own-<32 hex>` and one `cmdmesh-gen-<32 hex>` marker |
 | `configuration` | Proxmox `digest`, integer `memory_mb`/`swap_mb`, `other_sha256`, boolean `locked`/`pending` |
 | `runtime` | Running status, integer `memory_limit_bytes`, `init_start_ticks` and `pid_namespace_inode` |
@@ -110,6 +111,9 @@ fingerprint, actual node, kind and VMID. Caller origin labels, certificate leaf
 rotation, owner tags and generations do not create a different resource lock.
 Plans still bind those values independently. This is a same-controller lock key,
 not distributed exclusion across administrators or proof of a remote identity.
+The separate host boot fingerprint supports continuity checks across a procedure;
+guest init start ticks and namespace inodes alone can repeat after a host reboot.
+Boot identity does not change the stable resource lock key.
 
 `MemoryEvidenceError` exposes a fixed code and outcome, never supplied values.
 The caller must retain failed evidence as unqualified and provide recovery

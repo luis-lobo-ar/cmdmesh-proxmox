@@ -15,6 +15,7 @@ FIELDS = {
     "origin",
     "node",
     "host_profile",
+    "host_boot_id_sha256",
     "kind",
     "vmid",
     "tags",
@@ -107,6 +108,7 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
         if not isinstance(value[field], str) or not NAME.fullmatch(value[field]):
             raise MemoryEvidenceError("invalid-memory-evidence")
     host_profile(value["host_profile"])
+    digest(value["host_boot_id_sha256"], 64)
     config = value["configuration"]
     keys(
         config, {"digest", "memory_mb", "swap_mb", "other_sha256", "locked", "pending"}

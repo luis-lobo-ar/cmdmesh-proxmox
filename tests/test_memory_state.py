@@ -37,6 +37,7 @@ def observation():
         "origin": "example",
         "node": "node-a",
         "host_profile": value["host_profile"],
+        "host_boot_id_sha256": "f" * 64,
         "kind": "proxmox.lxc",
         "vmid": 101,
         "tags": ["cmdmesh-ansible", value["owner_tag"], value["generation_tag"]],
@@ -220,6 +221,15 @@ class MemoryStateTests(unittest.TestCase):
         with self.assertRaises(self.state.MemoryEvidenceError) as raised:
             self.validate(wanted=wanted)
         self.assertEqual(raised.exception.code, "invalid-memory-request")
+
+    def test_host_boot_identity_is_required_and_strictly_typed(self):
+        for invalid in (None, True, "", "not-a-hash"):
+            value = observation()
+            value["host_boot_id_sha256"] = invalid
+            self.assert_invalid(value, "invalid-memory-evidence")
+        value = observation()
+        del value["host_boot_id_sha256"]
+        self.assert_invalid(value, "invalid-memory-evidence")
 
 
 if __name__ == "__main__":

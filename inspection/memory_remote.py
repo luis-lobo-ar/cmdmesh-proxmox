@@ -380,6 +380,7 @@ def collect(request, *, observed_at_unix_ms):
     profile = host_identity(node)
     if profile != request["host_profile"]:
         raise RemoteObservationError("remote-memory-host-mismatch")
+    boot = host_boot_identity()
     versions = native_versions()
     if (versions["pve-manager"], versions["pve-container"]) not in SUPPORTED_VERSIONS:
         raise RemoteObservationError("remote-memory-version-unsupported")
@@ -397,6 +398,8 @@ def collect(request, *, observed_at_unix_ms):
         or read_text(f"/proc/{pid}/cgroup").strip() != cgroup
     ):
         raise RemoteObservationError("remote-memory-init-changed")
+    if host_boot_identity() != boot:
+        raise RemoteObservationError("remote-memory-host-boot-changed")
     if not isinstance(config["tags"], str):
         raise RemoteObservationError("remote-memory-config-incomplete")
     other = {
@@ -409,6 +412,7 @@ def collect(request, *, observed_at_unix_ms):
         "origin": selected["origin"],
         "node": node,
         "host_profile": profile,
+        "host_boot_id_sha256": boot,
         "kind": "proxmox.lxc",
         "vmid": vmid,
         "tags": config["tags"].split(";"),
@@ -436,6 +440,16 @@ def collect(request, *, observed_at_unix_ms):
         "complete": True,
         "warnings": [],
     }
+
+
+def host_boot_identity():
+    value = read_text("/proc/sys/kernel/random/boot_id").strip()
+    if (
+        not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", value)
+        or value == "00000000-0000-0000-0000-000000000000"
+    ):
+        raise RemoteObservationError("remote-memory-host-boot-unqualified")
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
 def deadline(_signal, _frame):
