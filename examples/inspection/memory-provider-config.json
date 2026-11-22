@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "origin": "example",
+  "controller": {"scratch_root": "/private/project/.generated/inspection"},
+  "tls": {
+    "host": "pve.example.invalid", "port": 8006,
+    "server_name": "pve.example.invalid", "ca_file": "/private/verified-pve-ca.pem"
+  },
+  "ssh": {
+    "executable": "/usr/bin/ssh", "host": "pve.example.invalid", "port": 22,
+    "user": "root", "identity_file": "/private/ssh-identity",
+    "known_hosts_file": "/private/known_hosts"
+  }
+}

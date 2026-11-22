@@ -6,8 +6,9 @@ then reports whether the evidence is complete, recent and live or merely an
 offline assertion. It does not authorize a change or prove application health.
 
 The standalone actions are `describe`, `target-resolve`, `observation-compare`,
-`controller-diagnose`, `ssh-diagnose` and `tls-diagnose`.
-The core CLI/MCP inspection bridge is subsequent work. Do not
+`controller-diagnose`, `ssh-diagnose`, `tls-diagnose` and `lxc-memory-observe`.
+Core exposes the same protocol through its `inspection` CLI commands and
+`cmdmesh_inspection` MCP tool. Do not
 register this archive as the legacy inventory executable: their protocols differ.
 
 ## Build and try without Proxmox
@@ -24,7 +25,8 @@ python3 tools/build_inspector.py --out .generated/proxmox-inspect.pyz
 ```
 
 The builder prints a SHA-256 receipt. The artifact contains exactly the inspector,
-its entrypoint, fixed probes and the shared inventory implementation.
+its entrypoint, fixed probes, memory evidence/collector modules and the shared
+inventory implementation.
 It does not copy private configuration or arbitrary repository contents. ZIP
 entry metadata is fixed, so equal source bytes produce equal artifact bytes.
 Output is mode 0700 and must be a new path; existing files and symlinks are refused.
@@ -261,6 +263,10 @@ application health. The interpreter and default trust store remain runtime input
 See Python's [SSL context and in-memory CA data reference](https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_verify_locations).
 
 ## Interpret the result
+
+JSON input and API data must use finite representable numbers. Literal NaN or
+Infinity and overflowing exponents such as `1e999` are refused. Malformed numeric
+evidence is not replaced with zero or allowed to escape as a serialization traceback.
 
 All results use `document_type:"cmdmesh.inspection.result"`, schema version 1,
 the requested operation, `outcome`, `data` and `diagnostics`. Diagnostics have

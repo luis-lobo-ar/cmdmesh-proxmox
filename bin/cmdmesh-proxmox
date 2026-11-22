@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -41,12 +42,20 @@ def snapshot(resources=None, warnings=None):
             "resources": resources or [], "warnings": warnings}
 
 
+def finite_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError()
+    return parsed
+
+
 def load_json(stream):
     raw = stream.read(MAX_BYTES + 1)
     if len(raw) > MAX_BYTES:
         raise InventoryError("JSON input exceeds size limit")
     try:
-        return json.loads(raw, parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
+        return json.loads(raw, parse_float=finite_float,
+                          parse_constant=lambda _value: (_ for _ in ()).throw(ValueError()))
     except (ValueError, UnicodeError):
         raise InventoryError("Invalid JSON document") from None
 
@@ -72,7 +81,11 @@ def trust_snapshot(config):
 
 
 def prepare_trust(config):
-    ca_data = trust_snapshot(config)
+    return trust_context(trust_snapshot(config))
+
+
+def trust_context(ca_data):
+    """Construct trust and its receipt from the same captured bytes."""
     try:
         context = (ssl.create_default_context(cadata=ca_data.decode("ascii"))
                    if ca_data is not None else ssl.create_default_context())

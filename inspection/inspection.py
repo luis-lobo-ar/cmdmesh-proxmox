@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -15,9 +16,18 @@ MAX_INPUT_BYTES = 16 * 1024 * 1024
 MAX_RESOURCES = 20000
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 KINDS = {"proxmox.node", "proxmox.lxc", "proxmox.vm"}
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 GUIDANCE = {
+    "invalid-json": (
+        "The input is not supported JSON",
+        [
+            "Check JSON syntax and finite numbers; NaN, Infinity and overflowing exponents are unsupported"
+        ],
+        [
+            "Correct or recollect the input; do not replace unknown measurements with zero"
+        ],
+    ),
     "invalid-observation": (
         "An observation lacks required typed evidence",
         [
@@ -310,6 +320,7 @@ def target_schema():
 
 def describe():
     import probes
+    import memory_collect
 
     return {
         "integration": "cmdmesh-proxmox",
@@ -357,7 +368,8 @@ def describe():
                 ],
             },
         ]
-        + probes.descriptions(),
+        + probes.descriptions()
+        + [memory_collect.description()],
     }
 
 
@@ -962,9 +974,24 @@ def dispatch(request, now_ms=None):
                 )
             )
             return result
+        if operation == "lxc-memory-observe":
+            import memory_collect
+
+            result = response(operation, "observed")
+            result.update(
+                memory_collect.run(request["input"], provider_config(request["config"]))
+            )
+            return result
         raise InspectionError("unsupported-operation", "unsupported")
     except InspectionError as error:
         return response(operation, error.outcome, code=error.code)
+
+
+def finite_float(value):
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError()
+    return parsed
 
 
 def load_json(stream):
@@ -973,7 +1000,9 @@ def load_json(stream):
         raise InspectionError("input-too-large")
     try:
         return json.loads(
-            raw, parse_constant=lambda _: (_ for _ in ()).throw(ValueError())
+            raw,
+            parse_float=finite_float,
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError()),
         )
     except (ValueError, UnicodeError):
         raise InspectionError("invalid-json") from None
