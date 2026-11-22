@@ -8,6 +8,8 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
+import signal
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -161,6 +163,72 @@ class InspectionProbeTests(unittest.TestCase):
             self.assertEqual(result["outcome"], "unavailable")
             self.assertEqual(result["diagnostics"][0]["code"], expected)
 
+    def test_supervised_group_cleanup_stops_a_tool_and_its_ordinary_child(self):
+        marker = self.base / "processes.json"
+        code = (
+            "import os,sys,json,time,subprocess\nfrom pathlib import Path\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{('import time;time.sleep(30) # ' + str(self.base))!r}])\n"
+            "pids=[os.getpid(),child.pid]\n"
+            f"Path({str(marker)!r}).write_text(json.dumps({{'pids':pids,'group':os.getpgrp(),"
+            "'birth':[Path('/proc/'+str(p)+'/stat').read_text().split()[21] for p in pids]}))\n"
+            "child.wait()\n"
+        )
+        value, config = self.controller(code)
+        request = {
+            "document_type": "cmdmesh.inspection.request",
+            "schema_version": 1,
+            "operation": "controller-diagnose",
+            "input": value,
+            "config": config,
+        }
+        process = subprocess.Popen(
+            [str(self.bundle)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            env={**os.environ, "CMDMESH_INSPECTION_PROCESS_GROUP": "1"},
+        )
+        record = None
+        try:
+            process.stdin.write(json.dumps(request).encode())
+            process.stdin.close()
+            for _ in range(200):
+                if marker.exists():
+                    record = json.loads(marker.read_text())
+                    break
+                time.sleep(0.01)
+            self.assertIsNotNone(record, "synthetic tool did not start")
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3)
+            for _ in range(50):
+                states = []
+                for pid in record["pids"]:
+                    try:
+                        states.append(Path(f"/proc/{pid}/stat").read_text().split()[2])
+                    except FileNotFoundError:
+                        states.append("gone")
+                if all(state in ("Z", "gone") for state in states):
+                    break
+                time.sleep(0.01)
+            self.assertTrue(all(state in ("Z", "gone") for state in states), states)
+            self.assertEqual(record["group"], process.pid)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait(timeout=3)
+            if record:
+                for pid, birth in zip(record["pids"], record["birth"]):
+                    try:
+                        state = Path(f"/proc/{pid}/stat").read_text().split()
+                        command = Path(f"/proc/{pid}/cmdline").read_bytes()
+                        if state[21] == birth and str(self.base).encode() in command:
+                            os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    except FileNotFoundError:
+                        pass
+
     def test_scratch_permissions_free_space_and_tool_selection_are_explicit(self):
         value, config = self.controller()
         self.base.chmod(0o755)
@@ -177,6 +245,19 @@ class InspectionProbeTests(unittest.TestCase):
         }
         self.assertEqual(
             self.inspect("controller-diagnose", value, config)["outcome"], "rejected"
+        )
+
+    def test_invalid_supervision_marker_cannot_select_an_unowned_process_group(self):
+        value, config = self.controller()
+        result = self.inspect(
+            "controller-diagnose",
+            value,
+            config,
+            {**os.environ, "CMDMESH_INSPECTION_PROCESS_GROUP": "invalid"},
+        )
+        self.assertEqual(result["outcome"], "rejected", result)
+        self.assertEqual(
+            result["diagnostics"][0]["code"], "invalid-supervision-context"
         )
 
     @contextlib.contextmanager

@@ -201,6 +201,10 @@ def scratch(config):
 
 
 def bounded_probe(program, args, work):
+    marker = os.environ.get("CMDMESH_INSPECTION_PROCESS_GROUP")
+    if marker is not None and (marker != "1" or os.getpgrp() != os.getpid()):
+        raise ProbeError("invalid-supervision-context")
+    supervised = marker == "1"
     config_path = work / "ansible.cfg"
     config_path.write_text(
         "[defaults]\ngathering = explicit\nretry_files_enabled = False\n"
@@ -225,7 +229,7 @@ def bounded_probe(program, args, work):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            start_new_session=True,
+            start_new_session=not supervised,
         )
     except OSError:
         raise ProbeError("controller-tool-unavailable", "unavailable") from None
@@ -270,7 +274,10 @@ def bounded_probe(program, args, work):
             time.sleep(0.01)
     finally:
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            if supervised:
+                process.kill()
+            else:
+                os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
         process.wait()

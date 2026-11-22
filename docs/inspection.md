@@ -186,6 +186,28 @@ and credential environment values are not inherited. Output is bounded to 64 KiB
 per probe and execution to three seconds. Raw output is withheld. Unknown,
 nonzero or out-of-range versions cannot pass.
 
+When core supplies `CMDMESH_INSPECTION_PROCESS_GROUP=1`, the inspector verifies
+that it leads the owned process group. Probe children inherit that group so core
+can stop tools and ordinary descendants on completion, timeout or interruption.
+The marker is lifecycle metadata, not permission. Standalone mode owns a separate
+group per probe and cleans it on normal completion or its deadline. External
+SIGKILL of an unsupervised standalone process does not provide core's cleanup
+guarantee. Tools that deliberately escape supervision are outside this trust model.
+External termination can leave a private scratch child. Review ownership before
+removing stale local scratch; this inspection never cleans unrelated directories.
+
+Cross-package qualification uses the immutable core source pin in
+`.github/core.json`. CI builds that core and executes the actual archive through
+it, including timeout, cancellation and normal completion with ordinary nested
+children. To run the same tests locally, provide your qualified core binary:
+
+```sh
+CMDMESH_BIN=/private/tools/cmdmesh python3 -m unittest discover -s tests -v
+```
+
+Without `CMDMESH_BIN`, the separate cross-package test class is skipped. Such a
+run is not complete protocol qualification.
+
 An observed result certifies only the supplied version ranges and measured local
 prerequisites. It does not certify every feature of that tool, remote access or
 application compatibility. The selected executable is trusted code, not sandboxed.
