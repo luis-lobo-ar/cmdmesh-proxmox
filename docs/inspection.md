@@ -78,13 +78,16 @@ offline data after authentication, permission, TLS or network failure.
 
 `origin` is a configured namespace bound to this selected endpoint, not an
 independently verified cluster UUID. The result records the configuration digest,
-collection start/end times and canonical snapshot digest. Before/after CA hashes
-detect ordinary trust-file changes; SSL separately opens that path, so the hash
-does not freeze the trust file or attest to immutable bytes throughout collection.
-The result is not a cryptographic remote-identity attestation.
+collection start/end times and canonical snapshot digest. For an explicit CA,
+`source.trust` records `mode: explicit-ca-snapshot` and the SHA-256 of the bytes
+loaded into the single SSL context used by every API request. Changing the file
+after capture does not change that context. Default trust records
+`mode: runtime-default` with a null digest. It does not attest to an immutable
+system trust store. Neither mode is a cryptographic remote-identity attestation.
 
 Omit `api.ca_file` to use the controller's default trust. If supplied, it must be
-a nonempty string identifying a readable regular PEM CA file. Explicit false,
+a nonempty string identifying a readable regular ASCII PEM CA file, at most 2 MiB.
+Empty files and invalid certificate data fail. Explicit false,
 zero, null, empty and container values are rejected before any API request;
 they never silently select default trust. FIFOs/devices are refused without
 blocking. Obtain the CA through an already trusted channel; do not fetch and

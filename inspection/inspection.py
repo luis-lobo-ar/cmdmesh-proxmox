@@ -109,13 +109,6 @@ GUIDANCE = {
             "Recover the trust anchor over an already trusted channel; do not fetch and trust an unverified peer"
         ],
     ),
-    "trust-input-changed": (
-        "Trust configuration changed during collection",
-        ["Compare the configured CA file before and after the operation"],
-        [
-            "Review the trust change and recollect; the interrupted evidence is not current verification"
-        ],
-    ),
     "target-not-observed": (
         "The exact target is absent from the reported complete scope",
         [
@@ -388,24 +381,8 @@ def provider_config(value):
     return value
 
 
-def source_binding(api):
-    material = {"api": api}
-    if "ca_file" in api:
-        if not isinstance(api["ca_file"], str) or not api["ca_file"]:
-            raise InspectionError("invalid-trust-file")
-        path = Path(api["ca_file"])
-        try:
-            descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
-        except OSError:
-            raise InspectionError("trust-unavailable") from None
-        if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-            os.close(descriptor)
-            raise InspectionError("invalid-trust-file")
-        with os.fdopen(descriptor, "rb") as stream:
-            data = stream.read(MAX_INPUT_BYTES + 1)
-        if len(data) > MAX_INPUT_BYTES:
-            raise InspectionError("trust-file-too-large")
-        material["ca_sha256"] = hashlib.sha256(data).hexdigest()
+def source_binding(api, trust):
+    material = {"api": api, "trust": trust}
     return hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -448,22 +425,23 @@ def collect_source(value, config, identity, now_ms):
     name(configured["origin"], "invalid-provider-config")
     if configured["origin"] != identity["origin"]:
         raise InspectionError("origin-mismatch")
-    # inventory is the unchanged public source embedded inside this zipapp.
+    # inventory is the shared public source embedded inside this zipapp.
     # No mutable sibling module or externally selected executable is imported.
     import inventory
 
     api = configured["api"]
     try:
-        binding = source_binding(api)
-        inventory.validate_config(api)
         started = time.time_ns() // 1000000
         monotonic_started = time.monotonic()
-        observed = inventory.inventory(api)
+        prepared = inventory.prepare_config(api)
+        trust = prepared[4]
+        binding = source_binding(api, trust)
+        observed = inventory.inventory_from_context(*prepared[:4])
         completed = time.time_ns() // 1000000
         elapsed = time.monotonic() - monotonic_started
-        if source_binding(api) != binding:
-            raise InspectionError("trust-input-changed", "unavailable")
     except inventory.InventoryError as error:
+        if str(error) == "ca_file must name a nonempty regular file":
+            raise InspectionError("invalid-trust-file") from None
         diagnostic = {
             "API request failed with HTTP 401": "api-authentication-failed",
             "API request failed with HTTP 403": "api-permission-denied",
@@ -483,6 +461,7 @@ def collect_source(value, config, identity, now_ms):
             "origin": configured["origin"],
             "provenance": "configured-provider-invocation",
             "configuration_sha256": binding,
+            "trust": trust,
             "collection_scope": "configured-api-endpoint",
             "visibility_qualified": False,
             "collection_started_at_unix_ms": started,

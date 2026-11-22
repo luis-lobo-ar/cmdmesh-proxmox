@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Bounded, GET-only Proxmox inventory. Python 3.10+, standard library only."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import signal
 import ssl
+import stat
 import sys
 import urllib.error
 import urllib.parse
@@ -49,7 +51,27 @@ def load_json(stream):
         raise InventoryError("Invalid JSON document") from None
 
 
-def validate_config(config):
+def trust_snapshot(config):
+    if "ca_file" not in config:
+        return None
+    path = config["ca_file"]
+    if not isinstance(path, str) or not path:
+        raise InventoryError("ca_file must name a nonempty regular file")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    except (OSError, ValueError):
+        raise InventoryError("Cannot load the configured CA trust") from None
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise InventoryError("ca_file must name a nonempty regular file")
+    with os.fdopen(descriptor, "rb") as stream:
+        data = stream.read(MAX_BYTES + 1)
+    if not data or len(data) > MAX_BYTES:
+        raise InventoryError("Cannot load the configured CA trust")
+    return data
+
+
+def prepare_config(config):
     if not isinstance(config, dict) or set(config) - CONFIG_KEYS:
         raise InventoryError("Unsupported provider configuration")
     endpoint = config.get("endpoint")
@@ -67,6 +89,7 @@ def validate_config(config):
     timeout = config.get("timeout_seconds", 10)
     if type(timeout) not in (int, float) or not 0 < timeout <= 60:
         raise InventoryError("timeout_seconds must be greater than zero and at most 60")
+    ca_data = trust_snapshot(config)
     credentials = []
     for key in ("token_id_env", "token_secret_env"):
         name = config.get(key)
@@ -79,10 +102,18 @@ def validate_config(config):
     if not re.fullmatch(r"[A-Za-z0-9_.@-]+![A-Za-z0-9_.-]+", credentials[0]):
         raise InventoryError("Invalid API token identifier")
     try:
-        context = ssl.create_default_context(cafile=config.get("ca_file"))
-    except (OSError, ssl.SSLError, TypeError):
+        context = (ssl.create_default_context(cadata=ca_data.decode("ascii"))
+                   if ca_data is not None else ssl.create_default_context())
+    except (OSError, ssl.SSLError, TypeError, UnicodeError):
         raise InventoryError("Cannot load the configured CA trust") from None
-    return endpoint.rstrip("/"), timeout, credentials, context
+    trust = ({"mode": "explicit-ca-snapshot", "sha256": hashlib.sha256(ca_data).hexdigest()}
+             if ca_data is not None else {"mode": "runtime-default", "sha256": None})
+    return endpoint.rstrip("/"), timeout, credentials, context, trust
+
+
+def validate_config(config):
+    # Preserve the existing four-field Python helper alongside protocol 1.
+    return prepare_config(config)[:4]
 
 
 def api_get(opener, endpoint, path, token, timeout):
@@ -115,7 +146,10 @@ def properties(entry, keys):
 
 
 def inventory(config):
-    endpoint, timeout, credentials, context = validate_config(config)
+    return inventory_from_context(*validate_config(config))
+
+
+def inventory_from_context(endpoint, timeout, credentials, context):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}),
                                         urllib.request.HTTPSHandler(context=context), NoRedirect())
     token = "PVEAPIToken=" + "=".join(credentials)

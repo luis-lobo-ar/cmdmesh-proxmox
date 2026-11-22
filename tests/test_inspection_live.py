@@ -1,15 +1,20 @@
 """Qualify live collection only against disposable loopback HTTPS fixtures."""
 
 import contextlib
+import hashlib
 import http.server
+import importlib.machinery
+import importlib.util
 import json
 import os
 from pathlib import Path
 import ssl
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRATCH = ROOT / ".generated/inspection-tests"
@@ -275,3 +280,49 @@ class InspectionLiveTests(unittest.TestCase):
         diagnostic = result["diagnostics"][0]
         self.assertEqual(diagnostic["code"], "trust-unavailable")
         self.assertIn("PEM", " ".join(diagnostic["next_checks"]))
+
+    def test_live_receipt_uses_the_same_captured_trust_as_all_api_requests(self):
+        loader = importlib.machinery.SourceFileLoader(
+            "inventory", str(ROOT / "bin/cmdmesh-proxmox")
+        )
+        spec = importlib.util.spec_from_loader(loader.name, loader)
+        inventory = importlib.util.module_from_spec(spec)
+        loader.exec_module(inventory)
+        inspect_spec = importlib.util.spec_from_file_location(
+            "inspection_source", ROOT / "inspection/inspection.py"
+        )
+        inspector = importlib.util.module_from_spec(inspect_spec)
+        inspect_spec.loader.exec_module(inspector)
+        with self.server() as (port, requests):
+            request = self.request(port)
+            copied_ca = self.root / "prepared-inspection.pem"
+            original = self.ca.read_bytes()
+            copied_ca.write_bytes(original)
+            request["config"]["api"]["ca_file"] = str(copied_ca)
+            factory = inventory.ssl.create_default_context
+
+            def rotate_file(*args, **kwargs):
+                copied_ca.write_text("rotated after capture")
+                return factory(*args, **kwargs)
+
+            with mock.patch.dict(
+                sys.modules, {"inventory": inventory}
+            ), mock.patch.dict(
+                os.environ,
+                {
+                    "INSPECTION_TEST_TOKEN_ID": "reader@pve!fixture",
+                    "INSPECTION_TEST_TOKEN_SECRET": "synthetic",
+                },
+            ), mock.patch.object(
+                inventory.ssl, "create_default_context", side_effect=rotate_file
+            ):
+                result = inspector.dispatch(request)
+            self.assertEqual(result["outcome"], "observed", result)
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(
+                result["data"]["source"]["trust"],
+                {
+                    "mode": "explicit-ca-snapshot",
+                    "sha256": hashlib.sha256(original).hexdigest(),
+                },
+            )
