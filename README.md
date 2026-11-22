@@ -72,9 +72,12 @@ The artifact's digest covers its bundled implementation, including reused
 inventory and fixed probe code. It also compares complete before/after evidence,
 diagnoses explicit controller tools and scratch, verifies SSH access and expected
 UID, and checks TLS trust/name without sending API credentials.
+The `lxc-memory-observe` action checks an owned running LXC's configured and
+enforced memory through pinned node TLS and strict SSH. It does not resize it.
 See [the inspection guide](docs/inspection.md) for private configuration, exact
-schemas, trust limits and failure recovery. The core inspection bridge remains
-in development. No inspection installs tools, repairs access or authorizes mutation.
+schemas, trust limits and failure recovery. Core's `inspection` commands and
+`cmdmesh_inspection` MCP tool use this same artifact protocol. No inspection
+installs tools, repairs access or authorizes mutation.
 
 ## Ansible collection
 

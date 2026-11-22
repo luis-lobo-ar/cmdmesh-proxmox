@@ -1,0 +1,15 @@
+{
+  "document_type": "cmdmesh.inspection.request",
+  "schema_version": 1,
+  "operation": "lxc-memory-observe",
+  "input": {
+    "selector": {"origin": "example", "node": "node-a", "kind": "proxmox.lxc", "vmid": 101},
+    "host_profile": {
+      "machine_id_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "ca_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "leaf_certificate_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "owner_tag": "cmdmesh-own-22222222222222222222222222222222",
+    "generation_tag": "cmdmesh-gen-33333333333333333333333333333333"
+  }
+}

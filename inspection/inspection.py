@@ -16,7 +16,7 @@ MAX_INPUT_BYTES = 16 * 1024 * 1024
 MAX_RESOURCES = 20000
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 KINDS = {"proxmox.node", "proxmox.lxc", "proxmox.vm"}
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 GUIDANCE = {
     "invalid-json": (
@@ -320,6 +320,7 @@ def target_schema():
 
 def describe():
     import probes
+    import memory_collect
 
     return {
         "integration": "cmdmesh-proxmox",
@@ -367,7 +368,8 @@ def describe():
                 ],
             },
         ]
-        + probes.descriptions(),
+        + probes.descriptions()
+        + [memory_collect.description()],
     }
 
 
@@ -970,6 +972,14 @@ def dispatch(request, now_ms=None):
                 probes.run(
                     operation, request["input"], provider_config(request["config"])
                 )
+            )
+            return result
+        if operation == "lxc-memory-observe":
+            import memory_collect
+
+            result = response(operation, "observed")
+            result.update(
+                memory_collect.run(request["input"], provider_config(request["config"]))
             )
             return result
         raise InspectionError("unsupported-operation", "unsupported")

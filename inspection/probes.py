@@ -71,6 +71,11 @@ GUIDANCE = {
         "Check the selected tool identity and version behavior",
         "Investigate the tool separately; raw output remains withheld",
     ),
+    "probe-output-invalid": (
+        "The evidence transport returned invalid UTF-8",
+        "Check the selected collector and transport encoding",
+        "Recollect valid evidence; corrupted bytes are never replaced or accepted as observations",
+    ),
     "probe-deadline": (
         "A fixed probe exceeded its deadline",
         "Check local tool startup or remote connectivity",
@@ -200,7 +205,7 @@ def scratch(config):
     return path
 
 
-def bounded_probe(program, args, work):
+def bounded_probe(program, args, work, *, timeout_seconds=3, strict_output=False):
     marker = os.environ.get("CMDMESH_INSPECTION_PROCESS_GROUP")
     if marker is not None and (marker != "1" or os.getpgrp() != os.getpid()):
         raise ProbeError("invalid-supervision-context")
@@ -264,12 +269,18 @@ def bounded_probe(program, args, work):
                         target.extend(data)
                         if len(output) + len(error) > 65536:
                             raise ProbeError("probe-output-limit", "unavailable")
+                try:
+                    decoded = output.decode(
+                        "utf-8", "strict" if strict_output else "replace"
+                    )
+                except UnicodeError:
+                    raise ProbeError("probe-output-invalid", "incomplete") from None
                 return (
                     status,
-                    output.decode("utf-8", "replace"),
+                    decoded,
                     error.decode("utf-8", "replace"),
                 )
-            if time.monotonic() - started >= 3:
+            if time.monotonic() - started >= timeout_seconds:
                 raise ProbeError("probe-deadline", "unavailable")
             time.sleep(0.01)
     finally:
@@ -370,12 +381,8 @@ def endpoint(config):
         raise ProbeError("tcp-unavailable", "unavailable") from None
 
 
-def ssh(value, config):
-    keys(value, {"origin", "expected_uid"})
-    identifier(value["origin"])
-    if config.get("origin") != value["origin"]:
-        raise ProbeError("origin-mismatch")
-    integer(value["expected_uid"], 0, 2**32 - 1)
+def ssh_command(config, command, *, timeout_seconds=3, strict_output=False):
+    """Internal fixed callers only: public input never supplies a command."""
     settings = config.get("ssh")
     keys(
         settings,
@@ -414,9 +421,15 @@ def ssh(value, config):
     args = ["-F", "none", "-i", str(identity), "-p", str(settings["port"])]
     for option in options:
         args.extend(["-o", option])
-    args.extend(["-l", settings["user"], "--", settings["host"], "id -u"])
+    args.extend(["-l", settings["user"], "--", settings["host"], command])
     with tempfile.TemporaryDirectory(prefix="probe-", dir=root) as directory:
-        status, output, error = bounded_probe(executable, args, Path(directory))
+        status, output, error = bounded_probe(
+            executable,
+            args,
+            Path(directory),
+            timeout_seconds=timeout_seconds,
+            strict_output=strict_output,
+        )
     if status != 0:
         if (
             "Host key verification failed" in error
@@ -425,6 +438,17 @@ def ssh(value, config):
             raise ProbeError("ssh-host-key-unverified", "unavailable")
         if "Permission denied" in error:
             raise ProbeError("ssh-authentication-failed", "unavailable")
+    return status, output
+
+
+def ssh(value, config):
+    keys(value, {"origin", "expected_uid"})
+    identifier(value["origin"])
+    if config.get("origin") != value["origin"]:
+        raise ProbeError("origin-mismatch")
+    integer(value["expected_uid"], 0, 2**32 - 1)
+    status, output = ssh_command(config, "id -u")
+    if status != 0:
         raise ProbeError("ssh-probe-failed", "unavailable")
     if not re.fullmatch(r"[0-9]{1,10}\n?", output):
         raise ProbeError("ssh-invalid-identity-evidence", "incomplete")
@@ -440,14 +464,7 @@ def ssh(value, config):
     }
 
 
-def tls(value, config):
-    import inventory
-
-    keys(value, {"origin"})
-    identifier(value["origin"])
-    if config.get("origin") != value["origin"]:
-        raise ProbeError("origin-mismatch")
-    settings = config.get("tls")
+def tls_settings(settings):
     keys(settings, {"host", "port", "server_name"}, {"ca_file"})
     server_name = settings["server_name"]
     if (
@@ -465,12 +482,11 @@ def tls(value, config):
             for label in server_name.split(".")
         ):
             raise ProbeError("invalid-probe-configuration") from None
-    try:
-        context, trust = inventory.prepare_trust(settings)
-    except inventory.InventoryError as error:
-        if str(error) == "ca_file must name a nonempty regular file":
-            raise ProbeError("invalid-probe-configuration") from None
-        raise ProbeError("tls-trust-unavailable", "unavailable") from None
+    return server_name
+
+
+def tls_handshake(settings, context, trust):
+    server_name = tls_settings(settings)
     try:
         with endpoint(settings) as connection:
             with context.wrap_socket(
@@ -491,10 +507,30 @@ def tls(value, config):
         raise ProbeError("tls-handshake-failed", "unavailable") from None
     return {
         "certificate_verified": True,
-        "origin": value["origin"],
         "trust": trust,
         "peer_certificate_sha256": digest,
         "protocol": protocol,
+    }
+
+
+def tls(value, config):
+    import inventory
+
+    keys(value, {"origin"})
+    identifier(value["origin"])
+    if config.get("origin") != value["origin"]:
+        raise ProbeError("origin-mismatch")
+    settings = config.get("tls")
+    tls_settings(settings)
+    try:
+        context, trust = inventory.prepare_trust(settings)
+    except inventory.InventoryError as error:
+        if str(error) == "ca_file must name a nonempty regular file":
+            raise ProbeError("invalid-probe-configuration") from None
+        raise ProbeError("tls-trust-unavailable", "unavailable") from None
+    return {
+        **tls_handshake(settings, context, trust),
+        "origin": value["origin"],
         "api_permission_tested": False,
         "mutation_authorized": False,
     }
