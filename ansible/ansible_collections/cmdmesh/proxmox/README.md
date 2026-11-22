@@ -1,7 +1,7 @@
 # cmdmesh.proxmox
 
 Eleven explicit-target operational roles, with one shared refusal/approval role.
-Tested locally with Ansible Core 2.19.4. Run with `--check` first. Outside check
+Tested locally with Ansible Core 2.19.4 and 2.20.4. Run with `--check` first. Outside check
 mode, `cmdmesh_allow_changes: true` is mandatory; this is an acknowledgment, not
 a substitute for reviewing targets and changes.
 
@@ -37,3 +37,53 @@ SSH does not prove a remote change stopped; inspect actual guest/storage state
 before retrying. Growth is not undone automatically, maintenance reboot has no
 automatic package rollback, and backup retention may remove old archives. Review
 capacity, restore coverage, retention and host access before authorizing changes.
+
+## Guarded memory module
+
+`cmdmesh.proxmox.lxc_memory` is a separate memory-only building block for the
+verified procedure under development. It accepts a strict prepared document
+from the [memory evidence contract](https://github.com/luis-lobo-ar/cmdmesh-proxmox/blob/main/docs/lxc-memory-evidence.md).
+It does not extend the older memory/swap role's input or claim that role provides
+the new continuity/postcondition guarantees.
+
+The module independently reads the actual node, machine/CA/leaf, host boot,
+owner/generation tags, running init identity, config and cgroup ceiling. Fresh
+preflight must match the frozen baseline and private headroom policy. Actual
+growth runs only `pct set <vmid> --memory <target> --digest <approved-digest>`.
+It reobserves and checks the memory-only result. No shrink, guest restart, tag
+creation, retry or automatic rollback is implemented.
+
+```yaml
+- name: Assess an existing frozen memory intent
+  cmdmesh.proxmox.lxc_memory:
+    prepared: "{{ cmdmesh_memory_prepared }}"
+  check_mode: true
+```
+
+Normal growth additionally requires `allow_changes: true`. A no-op returns
+unchanged without that permission or an additional headroom requirement. Check
+mode follows Ansible's convention: `changed: true` means it would change, while
+`mutation_attempted` stays false. The prepared baseline/desired values remain
+frozen; fresh data does not overwrite the approved variables.
+
+Success reports `assessment: checked`, `unchanged` or `postchecked`, fixed checks
+and mutation facts. Command outcome is separately `not-dispatched`, `succeeded`,
+`failed` or `unknown`. A successful command with an unchanged or unenforced limit
+fails postchecking. Failure after dispatch reports possible effects and uncertain
+state; it never automatically retries. Framework argument failures protect the
+prepared input, and normal results withhold invocation details. Keep logs private
+and reconcile actual state before another
+authorized attempt. Invocation details withhold the prepared document without
+censoring the returned correlation hash.
+
+Reserved timeout status 124 and signal-style termination are conservatively
+unknown. A native command can reuse those statuses, so the driver does not infer
+its final effects from them. See the [GNU timeout exit contract](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html).
+
+Native commands have ten-second supervisors; the module has a 120-second outer
+deadline. Controller interruption does not prove remote termination. Initial
+local tests cover the driver with synthetic native reads, plus actual Ansible
+packaging/refusal on a non-Proxmox target. Successful real-node growth, concurrency
+conflicts and interruption recovery still require owned-disposable qualification.
+Core's independent postcollection and consumed-intent journal remain separate P4
+work. Module `postchecked` alone is not overall procedure verification.

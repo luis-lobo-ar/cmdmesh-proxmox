@@ -1,4 +1,4 @@
-"""Fixed read-only Proxmox host/LXC collector. Standalone standard library source."""
+"""Canonical fixed read-only node/LXC collector; standalone standard library."""
 
 import hashlib
 import json
@@ -104,6 +104,12 @@ def command(argv):
             status = process.poll()
             if status is not None:
                 drain(process.stdout, result)
+                if status < 0 or status in (
+                    124,
+                    128 + signal.SIGKILL,
+                    128 + signal.SIGTERM,
+                ):
+                    raise RemoteObservationError("remote-memory-command-interrupted")
                 if status != 0:
                     raise RemoteObservationError("remote-memory-command-failed")
                 return result.decode("utf-8")

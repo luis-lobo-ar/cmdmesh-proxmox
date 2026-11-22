@@ -154,7 +154,10 @@ class MemoryCollectTests(unittest.TestCase):
         known.write_text("SYNTHETIC_HOST_KEY")
         tool = self.base / "ssh"
         source_hash = hashlib.sha256(
-            (ROOT / "inspection/memory_remote.py").read_bytes()
+            (
+                ROOT
+                / "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_remote.py"
+            ).read_bytes()
         ).hexdigest()
         tool.write_text(
             f"#!{sys.executable}\n"
