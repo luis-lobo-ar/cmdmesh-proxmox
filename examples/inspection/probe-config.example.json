@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "origin": "example",
+  "controller": {
+    "scratch_root": "/private/project/.generated/probes",
+    "tools": {
+      "python3": "/usr/bin/python3",
+      "ansible-playbook": "/private/tools/ansible/bin/ansible-playbook"
+    }
+  },
+  "ssh": {
+    "executable": "/usr/bin/ssh",
+    "host": "192.0.2.10",
+    "port": 22,
+    "user": "root",
+    "identity_file": "/private/keys/proxmox",
+    "known_hosts_file": "/private/ssh/known_hosts"
+  },
+  "tls": {
+    "host": "192.0.2.10",
+    "port": 8006,
+    "server_name": "node-a.example.invalid",
+    "ca_file": "/private/trust/proxmox-ca.pem"
+  }
+}

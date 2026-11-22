@@ -40,7 +40,7 @@ class InspectionBundleTests(unittest.TestCase):
             with zipfile.ZipFile(first) as archive:
                 self.assertEqual(
                     set(archive.namelist()),
-                    {"__main__.py", "inspection.py", "inventory.py"},
+                    {"__main__.py", "inspection.py", "inventory.py", "probes.py"},
                 )
                 self.assertEqual(
                     archive.read("inventory.py"),

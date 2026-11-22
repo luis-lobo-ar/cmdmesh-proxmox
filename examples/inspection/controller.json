@@ -1,0 +1,13 @@
+{
+  "document_type": "cmdmesh.inspection.request",
+  "schema_version": 1,
+  "operation": "controller-diagnose",
+  "input": {
+    "required_tools": {
+      "python3": {"minimum": "3.12.0", "maximum_exclusive": "3.13.0"},
+      "ansible-playbook": {"minimum": "2.19.4", "maximum_exclusive": "2.21.0"}
+    },
+    "minimum_free_bytes": 104857600,
+    "require_unix_socket": true
+  }
+}

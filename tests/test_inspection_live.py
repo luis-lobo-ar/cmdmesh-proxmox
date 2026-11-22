@@ -137,6 +137,117 @@ class InspectionLiveTests(unittest.TestCase):
             },
         }
 
+    def tls_request(self, port):
+        return {
+            "document_type": "cmdmesh.inspection.request",
+            "schema_version": 1,
+            "operation": "tls-diagnose",
+            "input": {"origin": "example"},
+            "config": {
+                "schema_version": 1,
+                "origin": "example",
+                "tls": {
+                    "host": "127.0.0.1",
+                    "port": port,
+                    "server_name": "localhost",
+                    "ca_file": str(self.ca),
+                },
+            },
+        }
+
+    def test_tls_probe_verifies_exact_name_and_captured_trust_without_http_or_credentials(
+        self,
+    ):
+        with self.server() as (port, requests):
+            code, result = self.inspect(self.tls_request(port))
+        self.assertEqual(code, 0, result)
+        self.assertTrue(result["data"]["certificate_verified"])
+        self.assertEqual(
+            result["data"]["trust"],
+            {
+                "mode": "explicit-ca-snapshot",
+                "sha256": hashlib.sha256(self.ca.read_bytes()).hexdigest(),
+            },
+        )
+        self.assertFalse(result["data"]["api_permission_tested"])
+        self.assertRegex(result["data"]["peer_certificate_sha256"], r"^[a-f0-9]{64}$")
+        self.assertEqual(requests, [])
+
+    def test_tls_probe_separates_name_and_chain_failure_without_insecure_retry(self):
+        with self.server() as (port, requests):
+            value = self.tls_request(port)
+            value["config"]["tls"]["server_name"] = "wrong.invalid"
+            _, result = self.inspect(value)
+            self.assertEqual(
+                result["diagnostics"][0]["code"], "tls-name-mismatch", result
+            )
+            value = self.tls_request(port)
+            del value["config"]["tls"]["ca_file"]
+            _, result = self.inspect(value)
+            self.assertEqual(
+                result["diagnostics"][0]["code"], "tls-chain-unverified", result
+            )
+            self.assertEqual(requests, [])
+
+    def test_tls_probe_rejects_invalid_explicit_trust_or_verification_bypass(self):
+        with self.server() as (port, requests):
+            for invalid in (False, None, ""):
+                value = self.tls_request(port)
+                value["config"]["tls"]["ca_file"] = invalid
+                _, result = self.inspect(value)
+                self.assertEqual(result["outcome"], "rejected", result)
+            value = self.tls_request(port)
+            value["config"]["tls"]["verify"] = False
+            _, result = self.inspect(value)
+            self.assertEqual(result["outcome"], "rejected")
+            self.assertEqual(requests, [])
+
+    def test_tls_requires_a_concrete_requested_name_but_accepts_a_valid_wildcard_san(
+        self,
+    ):
+        with tempfile.TemporaryDirectory(dir=SCRATCH) as directory:
+            ca, key = Path(directory) / "wildcard.pem", Path(directory) / "key.pem"
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-nodes",
+                    "-keyout",
+                    str(key),
+                    "-out",
+                    str(ca),
+                    "-days",
+                    "1",
+                    "-subj",
+                    "/CN=*.example.invalid",
+                    "-addext",
+                    "subjectAltName=DNS:*.example.invalid",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+            with mock.patch.object(self, "ca", ca), mock.patch.object(self, "key", key):
+                with self.server() as (port, requests):
+                    for name in (
+                        "*.example.invalid",
+                        "-bad.example.invalid",
+                        "name..example.invalid",
+                    ):
+                        value = self.tls_request(port)
+                        value["config"]["tls"]["server_name"] = name
+                        _, result = self.inspect(value)
+                        self.assertEqual(result["outcome"], "rejected", result)
+                    value = self.tls_request(port)
+                    value["config"]["tls"]["server_name"] = "node-a.example.invalid"
+                    code, result = self.inspect(value)
+                    self.assertEqual(code, 0, result)
+                    self.assertTrue(result["data"]["certificate_verified"])
+                    self.assertEqual(requests, [])
+
     def inspect(self, request):
         result = subprocess.run(
             [str(self.bundle)],

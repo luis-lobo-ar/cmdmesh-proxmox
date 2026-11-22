@@ -1,0 +1,6 @@
+{
+  "document_type": "cmdmesh.inspection.request",
+  "schema_version": 1,
+  "operation": "ssh-diagnose",
+  "input": {"origin": "example", "expected_uid": 0}
+}

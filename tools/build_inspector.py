@@ -15,6 +15,7 @@ SOURCES = {
     "__main__.py": "inspection/__main__.py",
     "inspection.py": "inspection/inspection.py",
     "inventory.py": "bin/cmdmesh-proxmox",
+    "probes.py": "inspection/probes.py",
 }
 
 

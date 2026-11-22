@@ -309,6 +309,8 @@ def target_schema():
 
 
 def describe():
+    import probes
+
     return {
         "integration": "cmdmesh-proxmox",
         "version": VERSION,
@@ -354,7 +356,8 @@ def describe():
                     "No application availability or backup recoverability claim",
                 ],
             },
-        ],
+        ]
+        + probes.descriptions(),
     }
 
 
@@ -750,7 +753,7 @@ def provider_config(value):
     keys(
         value,
         {"schema_version"},
-        {"origin", "api", "controller", "ssh"},
+        {"origin", "api", "controller", "ssh", "tls"},
         "invalid-provider-config",
     )
     if type(value["schema_version"]) is not int or value["schema_version"] != 1:
@@ -949,6 +952,16 @@ def dispatch(request, now_ms=None):
                 request["input"],
                 now_ms if now_ms is not None else time.time_ns() // 1000000,
             )
+        if operation in {"controller-diagnose", "ssh-diagnose", "tls-diagnose"}:
+            import probes
+
+            result = response(operation, "observed")
+            result.update(
+                probes.run(
+                    operation, request["input"], provider_config(request["config"])
+                )
+            )
+            return result
         raise InspectionError("unsupported-operation", "unsupported")
     except InspectionError as error:
         return response(operation, error.outcome, code=error.code)

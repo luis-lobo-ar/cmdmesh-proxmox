@@ -71,6 +71,18 @@ def trust_snapshot(config):
     return data
 
 
+def prepare_trust(config):
+    ca_data = trust_snapshot(config)
+    try:
+        context = (ssl.create_default_context(cadata=ca_data.decode("ascii"))
+                   if ca_data is not None else ssl.create_default_context())
+    except (OSError, ssl.SSLError, TypeError, UnicodeError):
+        raise InventoryError("Cannot load the configured CA trust") from None
+    trust = ({"mode": "explicit-ca-snapshot", "sha256": hashlib.sha256(ca_data).hexdigest()}
+             if ca_data is not None else {"mode": "runtime-default", "sha256": None})
+    return context, trust
+
+
 def prepare_config(config):
     if not isinstance(config, dict) or set(config) - CONFIG_KEYS:
         raise InventoryError("Unsupported provider configuration")
@@ -89,7 +101,7 @@ def prepare_config(config):
     timeout = config.get("timeout_seconds", 10)
     if type(timeout) not in (int, float) or not 0 < timeout <= 60:
         raise InventoryError("timeout_seconds must be greater than zero and at most 60")
-    ca_data = trust_snapshot(config)
+    context, trust = prepare_trust(config)
     credentials = []
     for key in ("token_id_env", "token_secret_env"):
         name = config.get(key)
@@ -101,13 +113,6 @@ def prepare_config(config):
         credentials.append(value)
     if not re.fullmatch(r"[A-Za-z0-9_.@-]+![A-Za-z0-9_.-]+", credentials[0]):
         raise InventoryError("Invalid API token identifier")
-    try:
-        context = (ssl.create_default_context(cadata=ca_data.decode("ascii"))
-                   if ca_data is not None else ssl.create_default_context())
-    except (OSError, ssl.SSLError, TypeError, UnicodeError):
-        raise InventoryError("Cannot load the configured CA trust") from None
-    trust = ({"mode": "explicit-ca-snapshot", "sha256": hashlib.sha256(ca_data).hexdigest()}
-             if ca_data is not None else {"mode": "runtime-default", "sha256": None})
     return endpoint.rstrip("/"), timeout, credentials, context, trust
 
 

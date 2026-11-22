@@ -5,9 +5,9 @@ the target. It matches an explicit origin, node, resource kind and numeric VMID,
 then reports whether the evidence is complete, recent and live or merely an
 offline assertion. It does not authorize a change or prove application health.
 
-The current standalone actions are `describe`, `target-resolve` and
-`observation-compare`. Other P3
-primitives and the core CLI/MCP inspection bridge are subsequent work. Do not
+The standalone actions are `describe`, `target-resolve`, `observation-compare`,
+`controller-diagnose`, `ssh-diagnose` and `tls-diagnose`.
+The core CLI/MCP inspection bridge is subsequent work. Do not
 register this archive as the legacy inventory executable: their protocols differ.
 
 ## Build and try without Proxmox
@@ -24,7 +24,7 @@ python3 tools/build_inspector.py --out .generated/proxmox-inspect.pyz
 ```
 
 The builder prints a SHA-256 receipt. The artifact contains exactly the inspector,
-its entrypoint and the existing inventory implementation as an embedded module.
+its entrypoint, fixed probes and the shared inventory implementation.
 It does not copy private configuration or arbitrary repository contents. ZIP
 entry metadata is fixed, so equal source bytes produce equal artifact bytes.
 Output is mode 0700 and must be a new path; existing files and symlinks are refused.
@@ -151,6 +151,92 @@ Expected service downtime still returns incomplete management health.
 Private workflows must establish ownership and collect evidence through a
 trusted channel before using this comparison as one postcondition. A matching
 comparison alone proves neither application availability nor recoverability.
+
+## Diagnose the controller
+
+Start from [the private probe configuration example](../examples/inspection/probe-config.example.json).
+Copy it into your private project, replace its placeholders, and prepare an
+owner-only scratch directory. Then select one of the fixed input examples:
+
+```sh
+.generated/proxmox-inspect.pyz --input examples/inspection/controller.json --config /private/project/probe-config.json
+.generated/proxmox-inspect.pyz --input examples/inspection/ssh.json --config /private/project/probe-config.json
+.generated/proxmox-inspect.pyz --input examples/inspection/tls.json --config /private/project/probe-config.json
+```
+
+The supplied addresses and paths are examples. Do not run them unchanged.
+
+Use `controller-diagnose` before attributing an execution failure to a host. Input
+declares `required_tools`, each with a `minimum` and `maximum_exclusive` version,
+and `minimum_free_bytes`. Version bounds have three numeric components. Set
+`require_unix_socket: true` only when the intended workflow needs that capability.
+Supported fixed probes are Python `--version`, Ansible `--version`, Terraform
+`version`, and SSH `-V`. OpenSSH's `p` component becomes the third number.
+
+Private configuration supplies `controller.scratch_root` and `controller.tools`,
+an object mapping those tool IDs to trusted absolute executable paths. Scratch
+must already exist, belong to the current user, have no group/other permissions
+and have no symlink in its path. Diagnosis creates and removes its own mode-0700
+child directory. It does not install tools, remove files or change permissions.
+
+Each tool runs with fixed arguments, a clean environment and a private working
+directory. Ansible receives a real private configuration file; `/dev/null` is
+not used as a configuration file. Ambient Ansible configuration, Python imports
+and credential environment values are not inherited. Output is bounded to 64 KiB
+per probe and execution to three seconds. Raw output is withheld. Unknown,
+nonzero or out-of-range versions cannot pass.
+
+An observed result certifies only the supplied version ranges and measured local
+prerequisites. It does not certify every feature of that tool, remote access or
+application compatibility. The selected executable is trusted code, not sandboxed.
+
+## Diagnose explicit SSH access
+
+`ssh-diagnose` input contains `origin` and `expected_uid`. Private configuration
+contains matching `origin`, `controller.scratch_root`, and this `ssh` object:
+
+```json
+{
+  "executable": "/usr/bin/ssh",
+  "host": "192.0.2.10",
+  "port": 22,
+  "user": "operator",
+  "identity_file": "/private/keys/proxmox",
+  "known_hosts_file": "/private/ssh/known_hosts"
+}
+```
+
+Key/trust paths must be absolute regular files. Paths containing whitespace or
+SSH expansion syntax are unsupported. The probe first checks DNS/TCP, then runs
+the fixed remote command `id -u`. It uses `-F none`, explicit identity and known
+hosts, strict host-key checking, no identity agent, no password prompts, no agent
+forwarding, no proxies and no connection multiplexing. `CertificateFile=none`
+prevents implicit loading of a sibling certificate. Only public-key authentication
+with the explicit key is attempted. It never reads an alias
+configuration, creates credentials or replaces a key. SSH config parsing is not
+a harmless inspection: `Match exec` can execute a local command. See
+[ssh configuration evaluation](https://man.openbsd.org/ssh_config).
+
+The result distinguishes connectivity, host-key, authentication and wrong-UID
+failures. Successful UID observation proves neither Proxmox authorization nor
+application health. The namespace is configured, not a verified cluster UUID.
+
+## Diagnose TLS without API credentials
+
+`tls-diagnose` input contains `origin`. Private configuration contains matching
+`origin` and `tls` with `host`, integer `port`, `server_name`, and optional
+`ca_file`. Use `host` for connection and `server_name` for the certificate's
+intended concrete DNS name or IP address. Wildcards and malformed requested names
+are rejected. A wildcard certificate SAN may still validate a concrete name.
+No HTTP request or token is sent.
+
+The probe uses the shared captured-CA constructor and verifies the certificate
+chain, validity and exact name. It reports name mismatch separately from chain
+failure, plus a peer-certificate digest and captured-trust receipt on success.
+Invalid explicit CA values never select system trust. There is no verification
+bypass field or insecure retry. A TLS success does not prove API permissions or
+application health. The interpreter and default trust store remain runtime inputs.
+See Python's [SSL context and in-memory CA data reference](https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_verify_locations).
 
 ## Interpret the result
 
