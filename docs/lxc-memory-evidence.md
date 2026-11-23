@@ -1,9 +1,10 @@
 # LXC memory evidence contract
 
 Use `lxc-memory-observe` to check the configured and enforced memory of one
-explicitly owned running LXC. Native inspector 0.3.0 adds this read-only action;
-the five earlier actions retain their behavior. Memory resizing and the verified
-Ansible procedure remain separate P4 work.
+explicitly owned running LXC. Native inspector 0.3.0 introduced this read-only
+action; 0.3.1 separates typed facts from readiness and checks coherent collection.
+The five earlier actions retain their behavior. The verified Ansible procedure
+remains separate P4 work.
 
 ## Run a live observation
 
@@ -133,7 +134,8 @@ Proxmox interfaces. It does not read private keys.
 All commands are fixed: package query, `pct help set`, Proxmox GET queries and
 `lxc-info` for the selected numeric ID. No create, set, resize, restart, guest
 execution or arbitrary command input exists. Duplicate IDs, another resource kind,
-missing/locked/pending config, malformed JSON and changing init identity fail.
+missing/uninterpretable config, malformed JSON and changing init identity fail.
+Readable lock/pending facts are retained and the strict readiness gate refuses them.
 The remaining configuration is hashed with only memory and the concurrency digest
 excluded. Raw configuration values are not returned.
 
@@ -160,6 +162,49 @@ The remote JSON decoder rejects duplicate keys and nonfinite numbers, including
 exponent overflow. The same finite-number fix also hardens the shared inventory and
 inspection decoders: invalid data returns a structured failure rather than
 escaping during serialization. Valid legacy protocol behavior stays unchanged.
+
+## Typed facts and readiness
+
+`validate_evidence` checks shape, typed values, correlation, identity/ownership,
+freshness and supported interpretation. It can preserve readable pending/locked
+state or a configured limit that does not match the enforced limit. It grants no
+live provenance or authority. `validate_observation` additionally requires the
+ready, running, unlocked, nonpending and matching-memory state used by preparation
+and preflight. The existing native observation action still uses that strict gate.
+
+The raw collector reports readable lock/pending flags. `complete` means its reads
+completed; it does not mean the guest is ready. Unknown pending-row fields,
+duplicate keys, invalid lock shape or untyped deletion markers still fail. A false
+deletion marker is not treated as a pending change. A stopped guest without an
+observable init/cgroup remains outside this live memory profile.
+
+The pending decoder requires bounded nonempty native keys and meaningful scalar
+current/new values. It rejects containers, nulls and key-only rows. Every current
+scalar row must match the current configuration's key, value and JSON type;
+missing or extra current rows do not establish a complete view. Numeric scalar
+encodings are supported because the installed candidate CLI emits integers as
+well as strings, despite the declared API string fields. Native reference-valued
+current configuration is omitted by the pending helper and remains covered by the
+configuration hash. Deletion markers are integers 0–2: zero is inactive and both
+positive values are pending. See the [API schema](https://github.com/proxmox/pve-container/blob/master/src/PVE/API2/LXC.pm)
+and [native pending helper](https://github.com/proxmox/pve-guest-common/blob/master/src/PVE/GuestHelpers.pm).
+
+Before returning complete evidence, the collector rereads current configuration,
+normalized pending state, package versions, effective cgroup limit/path and public
+host identity, alongside its PID/namespace/boot checks. A change across those reads
+fails collection. Pending row ordering is normalized. Volatile available RAM is
+a snapshot; it is not required to remain equal. These checks detect changes over
+the read span, not an atomic snapshot or exclusion of other administrators. State
+can change later; execution still needs fresh preflight and the native digest guard.
+
+`postconditions` computes every fixed boolean over typed same-subject evidence.
+It preserves known failed checks such as `enforced-memory-target: false` alongside
+other passed checks. Readiness, digest transition, boot/runtime continuity and
+unrelated state are evaluated independently. Missing/untrusted source or lost
+identity still fails qualification rather than becoming an authenticated failed
+check. The existing `verify` convenience function raises a fixed failure when any
+required postcondition fails. A future live facade must collect internally and
+carry the source receipt; passing in a saved frame cannot make it current.
 
 ## Fixed preparation and pre/post checks
 

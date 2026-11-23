@@ -38,7 +38,7 @@ class MemoryRemoteTests(unittest.TestCase):
         }
         self.lxc = [{"vmid": 101, "status": "running"}]
         self.qemu = []
-        self.pending = []
+        self.pending = None
         self.pid = 500
 
     def read(self, path):
@@ -78,8 +78,17 @@ class MemoryRemoteTests(unittest.TestCase):
             if path.endswith("/config"):
                 return json.dumps(self.config)
             if path.endswith("/pending"):
-                return json.dumps(self.pending)
+                return json.dumps(
+                    self.pending_rows() if self.pending is None else self.pending
+                )
         raise AssertionError(argv)
+
+    def pending_rows(self):
+        return [
+            {"key": key, "value": value}
+            for key, value in self.config.items()
+            if not isinstance(value, (list, dict))
+        ]
 
     def collect(self):
         with mock.patch.object(
@@ -170,18 +179,27 @@ class MemoryRemoteTests(unittest.TestCase):
                 self.collect()
             self.assertFalse(any(call[0] == "/usr/bin/lxc-info" for call in self.calls))
 
-    def test_pending_or_locked_config_cannot_become_complete(self):
+    def test_readable_pending_or_locked_state_remains_evidence_but_cannot_be_ready(
+        self,
+    ):
         for change in ("pending", "lock"):
             self.config.pop("lock", None)
-            self.pending = (
-                [{"key": "memory", "value": 256, "pending": 512}]
-                if change == "pending"
-                else []
-            )
+            self.pending = self.pending_rows() if change == "pending" else None
+            if change == "pending":
+                next(row for row in self.pending if row["key"] == "memory")[
+                    "pending"
+                ] = 512
             if change == "lock":
                 self.config["lock"] = "backup"
-            with self.assertRaises(self.remote.RemoteObservationError):
-                self.collect()
+            value = self.collect()
+            self.assertTrue(value["complete"])
+            self.assertTrue(
+                value["configuration"]["pending" if change == "pending" else "locked"]
+            )
+            import memory_state
+
+            with self.assertRaises(memory_state.MemoryEvidenceError):
+                memory_state.validate_observation(value, self.expected, now_ms=200000)
 
     def test_other_config_digest_excludes_only_memory_and_proxmox_digest(self):
         first = self.collect()["configuration"]["other_sha256"]
@@ -190,6 +208,108 @@ class MemoryRemoteTests(unittest.TestCase):
         self.assertEqual(self.collect()["configuration"]["other_sha256"], first)
         self.config["rootfs"] = "local:other-owned-volume"
         self.assertNotEqual(self.collect()["configuration"]["other_sha256"], first)
+
+    def test_delete_markers_are_typed_and_false_is_not_pending(self):
+        import memory_state
+
+        for marker in (0, 1, 2):
+            self.pending = self.pending_rows()
+            next(row for row in self.pending if row["key"] == "memory")[
+                "delete"
+            ] = marker
+            value = self.collect()
+            self.assertEqual(value["configuration"]["pending"], bool(marker))
+            if not marker:
+                memory_state.validate_observation(value, self.expected, now_ms=200000)
+        for marker in ("0", "1", 3, None, [], False, True):
+            self.pending = [{"key": "memory", "delete": marker}]
+            with self.assertRaises(self.remote.RemoteObservationError):
+                self.collect()
+
+    def test_invalid_lock_shape_is_not_reported_as_unlocked(self):
+        for invalid in (None, "", True, 1):
+            self.config["lock"] = invalid
+            with self.assertRaises(self.remote.RemoteObservationError):
+                self.collect()
+
+    def test_malformed_pending_rows_do_not_establish_a_complete_ready_view(self):
+        for row in (
+            {"key": ""},
+            {"key": "memory"},
+            {"key": "memory", "value": []},
+            {"key": "memory", "value": {}},
+            {"key": "memory", "pending": {}},
+            {"key": "memory", "value": None},
+            {"key": "bad\nkey", "value": "x"},
+        ):
+            with self.subTest(row=row):
+                self.pending = [row]
+                with self.assertRaises(self.remote.RemoteObservationError):
+                    self.collect()
+
+    def test_native_forced_delete_marker_is_observed_as_pending(self):
+        self.pending = self.pending_rows() + [{"key": "unused0", "delete": 2}]
+        value = self.collect()
+        self.assertTrue(value["configuration"]["pending"])
+
+    def test_native_state_changed_during_collection_cannot_be_complete(self):
+        for kind in ("configuration", "pending", "limit", "version"):
+            with self.subTest(kind=kind):
+                self.setUp()
+                original_read, original_command = self.read, self.command
+                changed = [False]
+
+                def read(path):
+                    if str(path) == "/proc/meminfo":
+                        changed[0] = True
+                        if kind == "configuration":
+                            self.config.update(
+                                rootfs="local:other-volume", digest="e" * 40
+                            )
+                        elif kind == "pending":
+                            self.pending = self.pending_rows()
+                            next(row for row in self.pending if row["key"] == "memory")[
+                                "pending"
+                            ] = 512
+                    if (
+                        kind == "limit"
+                        and changed[0]
+                        and str(path) == "/sys/fs/cgroup/lxc/101/memory.max"
+                    ):
+                        return str(128 * 1024**2)
+                    return original_read(path)
+
+                def command(argv):
+                    if (
+                        kind == "version"
+                        and changed[0]
+                        and argv[0] == "/usr/bin/dpkg-query"
+                    ):
+                        return "pve-manager\t9.2.22\npve-container\t6.1.14\n"
+                    return original_command(argv)
+
+                with mock.patch.object(
+                    self, "read", side_effect=read
+                ), mock.patch.object(self, "command", side_effect=command):
+                    with self.assertRaises(self.remote.RemoteObservationError):
+                        self.collect()
+
+    def test_pending_current_view_must_match_complete_typed_scalar_config(self):
+        rows = self.pending_rows()
+        for pending in ([], rows[:-1], rows + [{"key": "unknown", "value": "x"}]):
+            self.pending = pending
+            with self.assertRaises(self.remote.RemoteObservationError):
+                self.collect()
+        for changed in (128, "256"):
+            self.pending = self.pending_rows()
+            next(row for row in self.pending if row["key"] == "memory")[
+                "value"
+            ] = changed
+            with self.assertRaises(self.remote.RemoteObservationError):
+                self.collect()
+        self.config["lxc"] = [["lxc.example", "value"]]
+        self.pending = None
+        self.assertTrue(self.collect()["complete"])
 
     def test_lxc_ancestor_limits_and_init_identity_are_not_ignored(self):
         original = self.read
