@@ -26,7 +26,7 @@ python3 tools/build_inspector.py --out .generated/proxmox-inspect.pyz
 
 The builder prints a SHA-256 receipt. The artifact contains exactly the inspector,
 its entrypoint, fixed probes, memory evidence/collector modules and the shared
-inventory implementation.
+inventory implementation, plus a generated hash-only driver profile.
 It does not copy private configuration or arbitrary repository contents. ZIP
 entry metadata is fixed, so equal source bytes produce equal artifact bytes.
 Output is mode 0700 and must be a new path; existing files and symlinks are refused.
@@ -36,6 +36,14 @@ The SHA covers both inspector and reused inventory code in that archive. Importe
 Python standard-library code and the interpreter remain trusted runtime inputs.
 This is an integrity pin, not a signature or sandbox. See Python's
 [application archive contract](https://docs.python.org/3/library/zipapp.html).
+
+`driver-profile.json` identifies the memory profile/version and hashes the
+canonical Ansible module and both shared helpers. The driver is hashed without
+copying or executing it. Helper hashes use the same captured bytes embedded in
+the archive. A driver change therefore changes the artifact pin even when the
+inspection code stays the same. This metadata does not certify a resize: procedure
+preparation must match the actual collection files to it, and execution still
+needs independent verification. The live procedure facade remains under development.
 
 The offline example returns `outcome:"observed"`, `resolution:"resolved"` and the
 exact `example/node-a/proxmox.lxc/101` identity. Its `source.mode` is `offline`,
