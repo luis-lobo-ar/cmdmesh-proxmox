@@ -19,6 +19,7 @@ SOURCES = {
     "memory_state.py": "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_state.py",
     "memory_remote.py": "ansible/ansible_collections/cmdmesh/proxmox/plugins/module_utils/memory_remote.py",
     "memory_collect.py": "inspection/memory_collect.py",
+    "memory_phase.py": "inspection/memory_phase.py",
 }
 DRIVER_SOURCE = (
     "ansible/ansible_collections/cmdmesh/proxmox/plugins/modules/lxc_memory.py"

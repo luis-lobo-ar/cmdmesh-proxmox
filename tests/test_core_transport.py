@@ -107,6 +107,7 @@ class CoreTransportTests(unittest.TestCase):
                 "ssh-diagnose",
                 "tls-diagnose",
                 "lxc-memory-observe",
+                "lxc-memory-procedure",
             },
         )
         request = json.loads(

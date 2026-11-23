@@ -72,6 +72,7 @@ class InspectionBundleTests(unittest.TestCase):
                         "memory_state.py",
                         "memory_remote.py",
                         "memory_collect.py",
+                        "memory_phase.py",
                         "driver-profile.json",
                     },
                 )
