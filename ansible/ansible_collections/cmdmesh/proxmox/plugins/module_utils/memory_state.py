@@ -90,7 +90,7 @@ def validate_request(value):
     return value
 
 
-def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
+def validate_evidence(value, expected, *, now_ms, max_age_seconds=30):
     """Validate assertions only; a live collector must establish their provenance."""
     validate_request(expected)
     integer(now_ms, 0, 2**63 - 1)
@@ -175,14 +175,6 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
     versions = value["versions"]
     if (versions["pve-manager"], versions["pve-container"]) not in SUPPORTED_VERSIONS:
         raise MemoryEvidenceError("memory-version-unsupported", "unsupported")
-    if config["locked"] or config["pending"]:
-        raise MemoryEvidenceError("memory-configuration-unqualified")
-    if (
-        runtime["status"] != "running"
-        or runtime["memory_limit_bytes"] != config["memory_mb"] * 1024**2
-    ):
-        raise MemoryEvidenceError("memory-runtime-unqualified")
-
     physical = {
         "ca_certificate_sha256": value["host_profile"]["ca_certificate_sha256"],
         "machine_id_sha256": value["host_profile"]["machine_id_sha256"],
@@ -199,6 +191,21 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
         current_observation=False,
         mutation_authorized=False,
     )
+    return result
+
+
+def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
+    result = validate_evidence(
+        value, expected, now_ms=now_ms, max_age_seconds=max_age_seconds
+    )
+    config, runtime = result["configuration"], result["runtime"]
+    if config["locked"] or config["pending"]:
+        raise MemoryEvidenceError("memory-configuration-unqualified")
+    if (
+        runtime["status"] != "running"
+        or runtime["memory_limit_bytes"] != config["memory_mb"] * 1024**2
+    ):
+        raise MemoryEvidenceError("memory-runtime-unqualified")
     return result
 
 
@@ -331,6 +338,7 @@ def continuity(prepared, fresh, *, now_ms):
             "runtime-continuity": True,
             "unchanged-state": True,
             "fresh-complete": True,
+            "configuration-ready": True,
         },
         "validation_scope": "supplied-evidence-only",
         "current_observation": False,
@@ -354,17 +362,67 @@ def preflight(prepared, fresh, *, now_ms):
 
 
 def verify(prepared, fresh, *, now_ms):
-    result = continuity(prepared, fresh, now_ms=now_ms)
-    if fresh["configuration"]["memory_mb"] != prepared["desired_memory_mb"]:
-        raise MemoryEvidenceError("memory-postcondition-failed")
-    same_digest = (
-        fresh["configuration"]["digest"]
-        == prepared["baseline"]["configuration"]["digest"]
-    )
-    if same_digest == prepared["change_required"]:
-        raise MemoryEvidenceError("memory-config-digest-unqualified")
-    result["phase"] = "verify"
-    result["checks"].update(
-        {"configuration-target": True, "enforced-memory-target": True}
-    )
+    result = postconditions(prepared, fresh, now_ms=now_ms)
+    for check, code in (
+        ("host-boot-continuity", "memory-host-boot-changed"),
+        ("runtime-continuity", "memory-runtime-changed"),
+        ("unchanged-state", "memory-unrelated-state-changed"),
+        ("configuration-ready", "memory-configuration-unqualified"),
+        ("configuration-target", "memory-postcondition-failed"),
+        ("enforced-memory-target", "memory-runtime-unqualified"),
+        ("configuration-digest-transition", "memory-config-digest-unqualified"),
+    ):
+        if not result["checks"][check]:
+            raise MemoryEvidenceError(code)
     return result
+
+
+def postconditions(prepared, fresh, *, now_ms):
+    """Compute all fixed checks over typed evidence, retaining known mismatches."""
+    validate_prepared(prepared)
+    current = validate_evidence(fresh, prepared["request"], now_ms=now_ms)
+    before = prepared["baseline"]
+    if fresh["observed_at_unix_ms"] < before["observed_at_unix_ms"]:
+        raise MemoryEvidenceError("memory-evidence-time-unqualified")
+    checks = {
+        "host-guest-identity": current["subject_key"] == prepared["subject_key"],
+        "ownership-generation": True,
+        "fresh-complete": True,
+        "host-boot-continuity": fresh["host_boot_id_sha256"]
+        == before["host_boot_id_sha256"],
+        "runtime-continuity": fresh["runtime"]["status"] == "running"
+        and all(
+            fresh["runtime"][key] == before["runtime"][key]
+            for key in ("init_start_ticks", "pid_namespace_inode")
+        ),
+        "unchanged-state": fresh["tags"] == before["tags"]
+        and fresh["versions"] == before["versions"]
+        and fresh["host_capacity"]["total_bytes"]
+        == before["host_capacity"]["total_bytes"]
+        and all(
+            fresh["configuration"][key] == before["configuration"][key]
+            for key in ("swap_mb", "other_sha256")
+        ),
+        "configuration-ready": not fresh["configuration"]["locked"]
+        and not fresh["configuration"]["pending"],
+        "configuration-target": fresh["configuration"]["memory_mb"]
+        == prepared["desired_memory_mb"],
+        "enforced-memory-target": fresh["runtime"]["memory_limit_bytes"]
+        == prepared["desired_memory_mb"] * 1024**2,
+        "configuration-digest-transition": (
+            fresh["configuration"]["digest"] != before["configuration"]["digest"]
+        )
+        == prepared["change_required"],
+    }
+    return {
+        "document_type": "cmdmesh.proxmox.lxc-memory.checks",
+        "schema_version": 1,
+        "subject_key": prepared["subject_key"],
+        "change_required": prepared["change_required"],
+        "phase": "verify",
+        "checks": checks,
+        "satisfied": all(checks.values()),
+        "validation_scope": "supplied-evidence-only",
+        "current_observation": False,
+        "mutation_authorized": False,
+    }

@@ -16,7 +16,7 @@ MAX_INPUT_BYTES = 16 * 1024 * 1024
 MAX_RESOURCES = 20000
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 KINDS = {"proxmox.node", "proxmox.lxc", "proxmox.vm"}
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 GUIDANCE = {
     "invalid-json": (

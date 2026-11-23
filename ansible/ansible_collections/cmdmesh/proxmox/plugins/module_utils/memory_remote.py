@@ -287,21 +287,57 @@ def configuration(node, vmid):
     if not isinstance(pending, list) or len(pending) > 10000:
         raise RemoteObservationError("remote-memory-pending-unqualified")
     seen = set()
+    has_pending = False
+    current = {}
     for row in pending:
         if (
             not isinstance(row, dict)
             or "key" not in row
             or not isinstance(row["key"], str)
+            or not NAME.fullmatch(row["key"])
             or row.keys() - {"key", "value", "pending", "delete"}
             or row["key"] in seen
+            or not row.keys() & {"value", "pending", "delete"}
         ):
             raise RemoteObservationError("remote-memory-pending-unqualified")
         seen.add(row["key"])
-        if "pending" in row or "delete" in row:
+        for field in ("value", "pending"):
+            if field in row and (
+                type(row[field]) not in (str, int, float)
+                or (type(row[field]) is float and not math.isfinite(row[field]))
+            ):
+                raise RemoteObservationError("remote-memory-pending-unqualified")
+        if "value" in row:
+            current[row["key"]] = row["value"]
+        if "pending" in row:
+            has_pending = True
+        if "delete" in row:
+            if type(row["delete"]) is not int or row["delete"] not in (0, 1, 2):
+                raise RemoteObservationError("remote-memory-pending-unqualified")
+            has_pending = has_pending or bool(row["delete"])
+        if "value" not in row and "pending" not in row and row.get("delete", 0) == 0:
             raise RemoteObservationError("remote-memory-pending-unqualified")
-    if "lock" in config:
-        raise RemoteObservationError("remote-memory-config-locked")
-    return config
+    expected_current = {
+        key: value
+        for key, value in config.items()
+        if not isinstance(value, (list, dict))
+    }
+    if current.keys() != expected_current.keys() or any(
+        type(value) is not type(expected_current[key]) or value != expected_current[key]
+        for key, value in current.items()
+    ):
+        raise RemoteObservationError("remote-memory-pending-unqualified")
+    if "lock" in config and (not isinstance(config["lock"], str) or not config["lock"]):
+        raise RemoteObservationError("remote-memory-config-incomplete")
+    pending_digest = hashlib.sha256(
+        json.dumps(
+            sorted(pending, key=lambda row: row["key"]),
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+    return config, has_pending, pending_digest
 
 
 def lxc_pid(vmid):
@@ -393,11 +429,18 @@ def collect(request, *, observed_at_unix_ms):
     if "--digest" not in command(["/usr/sbin/pct", "help", "set"]):
         raise RemoteObservationError("remote-memory-digest-unsupported")
     guest_identity(node, vmid)
-    config = configuration(node, vmid)
+    config, pending, pending_digest = configuration(node, vmid)
     pid = lxc_pid(vmid)
     init = init_state(pid)
     limit, cgroup = memory_limit(pid)
     capacity = host_capacity()
+    if (
+        configuration(node, vmid) != (config, pending, pending_digest)
+        or native_versions() != versions
+        or memory_limit(pid) != (limit, cgroup)
+        or host_identity(node) != profile
+    ):
+        raise RemoteObservationError("remote-memory-state-changed")
     if (
         lxc_pid(vmid) != pid
         or init_state(pid) != init
@@ -431,8 +474,8 @@ def collect(request, *, observed_at_unix_ms):
                     other, sort_keys=True, separators=(",", ":"), allow_nan=False
                 ).encode()
             ).hexdigest(),
-            "locked": False,
-            "pending": False,
+            "locked": "lock" in config,
+            "pending": pending,
         },
         "runtime": {
             "status": "running",
