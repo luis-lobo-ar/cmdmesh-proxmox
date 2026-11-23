@@ -6,7 +6,8 @@ then reports whether the evidence is complete, recent and live or merely an
 offline assertion. It does not authorize a change or prove application health.
 
 The standalone actions are `describe`, `target-resolve`, `observation-compare`,
-`controller-diagnose`, `ssh-diagnose`, `tls-diagnose` and `lxc-memory-observe`.
+`controller-diagnose`, `ssh-diagnose`, `tls-diagnose`, `lxc-memory-observe` and
+`lxc-memory-procedure`.
 Core exposes the same protocol through its `inspection` CLI commands and
 `cmdmesh_inspection` MCP tool. Do not
 register this archive as the legacy inventory executable: their protocols differ.
@@ -26,7 +27,7 @@ python3 tools/build_inspector.py --out .generated/proxmox-inspect.pyz
 
 The builder prints a SHA-256 receipt. The artifact contains exactly the inspector,
 its entrypoint, fixed probes, memory evidence/collector modules and the shared
-inventory implementation.
+inventory implementation, plus a generated hash-only driver profile.
 It does not copy private configuration or arbitrary repository contents. ZIP
 entry metadata is fixed, so equal source bytes produce equal artifact bytes.
 Output is mode 0700 and must be a new path; existing files and symlinks are refused.
@@ -36,6 +37,85 @@ The SHA covers both inspector and reused inventory code in that archive. Importe
 Python standard-library code and the interpreter remain trusted runtime inputs.
 This is an integrity pin, not a signature or sandbox. See Python's
 [application archive contract](https://docs.python.org/3/library/zipapp.html).
+
+`driver-profile.json` identifies the memory profile/version and hashes the
+canonical Ansible module and both shared helpers. The driver is hashed without
+copying or executing it. Helper hashes use the same captured bytes embedded in
+the archive. A driver change therefore changes the artifact pin even when the
+inspection code stays the same. This metadata does not certify a resize: procedure
+preparation must match the actual collection files to it, and execution still
+needs independent verification.
+
+## Assess an owned memory procedure
+
+`lxc-memory-procedure` provides three read-only phases. It never runs the
+mutation module. The controller procedure executor, approval, durable intent and
+locking remain separate work; this action alone cannot authorize a resize.
+
+1. Send `phase:"prepare"`, a `request` accepted by `lxc-memory-observe`,
+   `desired_memory_mb`, and
+   `capacity_policy:{"mode":"observed-available-headroom","minimum_remaining_bytes":0}`.
+   Choose the reserve for your installation. The action collects current state
+   and returns the frozen `prepared` intent, its SHA-256 and explicit checks.
+2. Send `{"phase":"preflight","prepared":...}` with that intent unchanged.
+   The action recollects state and checks the original baseline and capacity.
+3. Send `{"phase":"verify","prepared":...}` to inspect the actual target
+   configuration, enforced cgroup limit and required unchanged state.
+
+For example, wrap the request from your private memory-observation input:
+
+```json
+{
+  "document_type": "cmdmesh.inspection.request",
+  "schema_version": 1,
+  "operation": "lxc-memory-procedure",
+  "input": {
+    "phase": "prepare",
+    "request": {
+      "selector": {"origin":"example","node":"node-a","kind":"proxmox.lxc","vmid":101},
+      "host_profile": {
+        "machine_id_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "ca_certificate_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "leaf_certificate_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "owner_tag": "cmdmesh-own-22222222222222222222222222222222",
+      "generation_tag": "cmdmesh-gen-33333333333333333333333333333333"
+    },
+    "desired_memory_mb": 2048,
+    "capacity_policy": {
+      "mode": "observed-available-headroom",
+      "minimum_remaining_bytes": 1073741824
+    }
+  }
+}
+```
+
+Replace the example selector, hashes and ownership tags with qualified private
+values. See [the memory evidence guide](lxc-memory-evidence.md) for access and
+identity qualification. Use `describe` for the full schema. There is no apply
+phase, caller-supplied after-snapshot or provenance flag.
+
+Prepare and preflight additionally require the private configuration's
+`controller.tools.ansible-playbook` path. Supported versions are Ansible
+2.19.4–2.20.x and OpenSSH 8.9–10.x. Both executables are probed. Returned driver
+context contains only a fixed direct-SSH policy and explicit paths. Verification
+does not require Ansible, so it can still collect evidence after a driver failure.
+
+Each successful assessment returns `profile_id`, `profile_version`, `phase`,
+`subject_key`, `prepared`, `prepared_sha256`, `checks`, `evidence`, `driver`,
+`profile_files` and `references`. The prepared hash uses sorted compact UTF-8 JSON
+without ASCII escaping. References hash the CA, SSH identity, known-hosts and
+executables before and after collection; key contents are never returned or
+copied. The returned CA hash must match the bytes loaded for TLS. Preparation
+requires the builder's bundled profile and matching helper hashes; source-tree
+execution cannot replace that profile with a mutable metadata file.
+
+A trustworthy current verification with false postconditions returns
+`outcome:"incomplete"`, exit 1, and retains its check map and evidence. A missing,
+untrusted or wrong-subject observation returns a negative result without an
+assessment. Treat those cases differently when reconciling an attempted change.
+An all-true verification describes current state; it does not prove a preceding
+command completed. Every assessment reports `mutation_authorized:false`.
 
 The offline example returns `outcome:"observed"`, `resolution:"resolved"` and the
 exact `example/node-a/proxmox.lxc/101` identity. Its `source.mode` is `offline`,

@@ -42,7 +42,7 @@ GUIDANCE = {
 }
 
 
-def collect(value, config):
+def collect_evidence(value, config):
     import inventory
 
     if not isinstance(value, dict):
@@ -103,7 +103,7 @@ def collect(value, config):
         ) from None
     if not isinstance(frame, dict) or frame.get("observed_at_unix_ms") != started_ms:
         raise probes.ProbeError("memory-remote-evidence-invalid", "incomplete")
-    validated = memory_state.validate_observation(frame, wanted, now_ms=completed_ms)
+    validated = memory_state.validate_evidence(frame, wanted, now_ms=completed_ms)
     return {
         "observation": {key: validated[key] for key in memory_state.FIELDS},
         "subject_key": validated["subject_key"],
@@ -119,6 +119,12 @@ def collect(value, config):
         "current_observation": True,
         "mutation_authorized": False,
     }
+
+
+def collect(value, config):
+    result = collect_evidence(value, config)
+    memory_state.require_ready(result["observation"])
+    return result
 
 
 def run(value, config):

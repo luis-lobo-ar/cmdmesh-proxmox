@@ -198,7 +198,13 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
     result = validate_evidence(
         value, expected, now_ms=now_ms, max_age_seconds=max_age_seconds
     )
-    config, runtime = result["configuration"], result["runtime"]
+    require_ready(result)
+    return result
+
+
+def require_ready(value):
+    """Require readiness after typed evidence validation; grants no authority."""
+    config, runtime = value["configuration"], value["runtime"]
     if config["locked"] or config["pending"]:
         raise MemoryEvidenceError("memory-configuration-unqualified")
     if (
@@ -206,7 +212,6 @@ def validate_observation(value, expected, *, now_ms, max_age_seconds=30):
         or runtime["memory_limit_bytes"] != config["memory_mb"] * 1024**2
     ):
         raise MemoryEvidenceError("memory-runtime-unqualified")
-    return result
 
 
 def capacity_policy(value):

@@ -74,6 +74,10 @@ diagnoses explicit controller tools and scratch, verifies SSH access and expecte
 UID, and checks TLS trust/name without sending API credentials.
 The `lxc-memory-observe` action checks an owned running LXC's configured and
 enforced memory through pinned node TLS and strict SSH. It does not resize it.
+`lxc-memory-procedure` adds read-only preparation, fresh preflight and independent
+postchecks around a frozen intent. Known failed checks retain their evidence;
+the phase action never dispatches a change. See
+[the phase example](docs/inspection.md#assess-an-owned-memory-procedure).
 See [the inspection guide](docs/inspection.md) for private configuration, exact
 schemas, trust limits and failure recovery. Core's `inspection` commands and
 `cmdmesh_inspection` MCP tool use this same artifact protocol. No inspection
