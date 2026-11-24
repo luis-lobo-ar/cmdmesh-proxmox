@@ -122,6 +122,13 @@ recipes a resolvable capability boundary: an older collection fails before
 connecting instead of ignoring a new variable. The inventory executable and
 inspection protocol versions are unchanged.
 
+The developing persistence profile also has a thin `lxc_persistence` Ansible
+module: observe a declared reference source, prepare a stopped-source backup,
+or execute its retained canonical intent once. Check mode is source preflight
+only; real backup requires `allow_changes: true`. The local backup tests and a
+native running-source observation pass. Native stopped-source backup, rebuild
+and restore remain unqualified. See the [action contract and examples](docs/persistence-profile.md#ansible-entry-point).
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example

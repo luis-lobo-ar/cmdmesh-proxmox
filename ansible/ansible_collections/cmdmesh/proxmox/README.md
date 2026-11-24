@@ -39,6 +39,20 @@ before retrying. Growth is not undone automatically, maintenance reboot has no
 automatic package rollback, and backup retention may remove old archives. Review
 capacity, restore coverage, retention and host access before authorizing changes.
 
+## Reference persistence module in development
+
+`cmdmesh.proxmox.lxc_persistence` exposes readonly `inspect`, `prepare_backup`
+and an explicitly permitted `backup` over the fixed reference profile. Backup
+check mode repeats the frozen source checks without consuming the operation or
+writing snapshots/NAS output. Real dispatch requires exact retained canonical
+bytes/hash and `allow_changes: true`; failures retain partial state and never
+retry automatically. Invocation arguments and runtime traces are withheld while
+safe returned hashes remain intact. See the [profile contract and examples](../../../../docs/persistence-profile.md#ansible-entry-point).
+
+Local tests and a native running observer are qualified. Native stopped-source
+backup, rebuild and independent restore remain pending; this module is still a
+development interface, not a promoted production recovery procedure.
+
 ## Guarded memory module
 
 `cmdmesh.proxmox.lxc_memory` is a separate memory-only building block for the
