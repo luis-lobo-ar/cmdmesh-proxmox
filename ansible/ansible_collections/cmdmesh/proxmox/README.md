@@ -53,6 +53,14 @@ Local tests and a native running observer are qualified. Native stopped-source
 backup, rebuild and independent restore remain pending; this module is still a
 development interface, not a promoted production recovery procedure.
 
+`cmdmesh.proxmox.lxc_persistence_receive` is the separate receive stage in
+development. Its `prepare` action binds an exact empty owned recovery parent,
+host/pool fingerprints and independently authenticated private plaintext streams.
+`receive` requires the retained canonical preparation/hash and explicit permission;
+check mode repeats preflight only. Actual receives stay unmounted/read-only and
+validate snapshot GUIDs. `received_verified` never implies application or
+source-unavailable recovery. See the [receive contract](../../../../docs/persistence-profile.md#unmounted-receive).
+
 ## Guarded memory module
 
 `cmdmesh.proxmox.lxc_memory` is a separate memory-only building block for the
