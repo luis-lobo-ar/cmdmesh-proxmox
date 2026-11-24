@@ -60,6 +60,54 @@ parent death before gate release and malformed deep result frames. CI builds the
 standard tools in private project scratch so these tests do not silently skip.
 These component tests do not qualify a real snapshot, NAS write, restore or reboot.
 
+## Source-state observer
+
+`persistence_observe.observe(request)` is the read-only native source observer.
+It checks host machine/certificate fingerprints, exact expected installed
+versions, mount namespace and early guest ownership/isolation/bind mounts before
+reading the declared retained application files. A second observation must match
+before the result is returned. The source's inventory origin is a caller-provided
+label; machine and certificate fingerprints establish native host identity.
+
+The request has schema version 1, `source`, `policy`, `reference_guard`,
+`backup_store` and `versions`. `source` uses the manifest source identity schema.
+`policy` is the initialized reference pre-start policy schema 2.
+`reference_guard` identifies an absolute non-symlink regular file by `path` and
+`sha256`. Only guard SHA-256
+`8a96f2ce9fcfce64221263f3fee70b399449d5a66d2d6d938a493bcdcf9666e1`
+is supported. Obtain it from `cmdmesh-recipes` commit
+`879c157648bd7eb0de33412edfa002d1cb701e49`,
+`examples/reference-ledger/prestart_guard.py`, and install it without group/other
+write permission. This is a fixed shared reader, not a supplied executable hook.
+It retains rootfs, generated LXC policy, idmap and ZFS GUID/ownership checks.
+
+`backup_store` declares `mountpoint`, exact NFS `source`, and expected new-file
+`file_uid`/`file_gid`. Observation proves one exact NFSv3 hard/TCP mount with
+nodev/nosuid/noexec and explicit nolock/local_lock=all; it reports the export root's
+actual metadata and never changes it. It does not yet prove creation permissions,
+mapped ownership of new files or durability of future writes.
+
+`versions` pins `pve-manager`, `pve-container` and `zfsutils-linux` to their actual
+installed versions. The prototype accepts PVE 9, container 6 and ZFS 2.4 families
+only, and still requires an exact request match. This is a conservative input
+boundary, not certification of every combination in those families.
+
+A running guest produces `quiesced: false`, `application: null` and
+`backup_verified: false`; its live database metadata is not consistency evidence.
+For a stopped guest, the observer takes a nonblocking exclusive flock on the
+existing retained `application.json`, checks the exact private owner/mode,
+schema/identity, SQLite integrity and meaningful records through a read-only,
+immutable connection, then repeats hashes and state checks. It refuses SQLite
+sidecars rather than silently ignoring a WAL or journal. Results contain record
+counts and hashes, never credentials or record values. `source_state(request,
+require_stopped=True)` holds that same lock across a caller's operation. It does
+not stop/start guests, create files or repair data/ownership.
+
+Twelve local cases cover unsafe guest configuration, competing/unsafe locks,
+real SQLite reads and corruption, sidecars/symlinks, exact backing, rejected guard
+substitution, trust ordering, running-state limitations, changed state and the
+actual pinned guard/request contract. Native qualification remains pending.
+
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling
 ZFS datasets retain its database and configuration, including application

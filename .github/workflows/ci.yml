@@ -28,6 +28,12 @@ jobs:
           ref: ${{ steps.core.outputs.commit }}
           path: .generated/core
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: luis-lobo-ar/cmdmesh-recipes
+          ref: '879c157648bd7eb0de33412edfa002d1cb701e49'
+          path: .generated/reference-recipes
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
           toolchain: '1.92.0'
@@ -62,6 +68,7 @@ jobs:
           CMDMESH_BIN: ${{ github.workspace }}/.generated/core/target/debug/cmdmesh
           CMDMESH_AGE: ${{ github.workspace }}/.generated/age/bin/age
           CMDMESH_AGE_KEYGEN: ${{ github.workspace }}/.generated/age/bin/age-keygen
+          CMDMESH_REFERENCE_GUARD_SOURCE: ${{ github.workspace }}/.generated/reference-recipes/examples/reference-ledger/prestart_guard.py
       - name: All role syntax checks
         run: python tools/check-ansible.py
       - name: Basic role lint
