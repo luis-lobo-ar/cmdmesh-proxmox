@@ -134,6 +134,11 @@ authenticated data/config streams into absent datasets below an empty owned
 parent. It keeps them unmounted and read-only, checks their snapshot GUIDs, and
 never reports application recovery. See the [receive contract](docs/persistence-profile.md#unmounted-receive).
 
+The developing `lxc_persistence_recipient` module provisions a fresh stopped,
+network-isolated replacement rootfs while preserving the original reference
+source. It deliberately omits retained binds during template extraction and does
+not start or initialize an application. See the [recipient contract](docs/persistence-profile.md#stopped-rebuild-recipient).
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example

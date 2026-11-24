@@ -61,6 +61,13 @@ check mode repeats preflight only. Actual receives stay unmounted/read-only and
 validate snapshot GUIDs. `received_verified` never implies application or
 source-unavailable recovery. See the [receive contract](../../../../docs/persistence-profile.md#unmounted-receive).
 
+`cmdmesh.proxmox.lxc_persistence_recipient` is the separate developing stopped
+rebuild-recipient stage. Preparation binds the locked source, absent destination,
+template and storage; actual provision consumes one target claim before the only
+verified HTTPS create. It supplies no retained binds to template setup. Status
+never reposts. `provisioned_verified` does not certify an authenticated application
+rebuild. See the [recipient contract](../../../../docs/persistence-profile.md#stopped-rebuild-recipient).
+
 ## Guarded memory module
 
 `cmdmesh.proxmox.lxc_memory` is a separate memory-only building block for the
