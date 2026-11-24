@@ -311,6 +311,84 @@ not authenticate who encrypted it. A manifest found on the backup store is not
 trusted by itself. Restore must consume the separately retained completed receipt
 and reject modified, mixed-generation or truncated artifacts before allocation.
 
+## Unmounted receive
+
+The developing `cmdmesh.proxmox.lxc_persistence_receive` module implements only
+the storage receive stage of restore. Its local tests exercise real private files,
+sealed inputs, process deadlines and synthetic native commands. Native receive,
+application recovery and source-unavailable recovery are **not yet qualified**.
+
+Use `action: prepare` with a version-1 `restore_request` and `manifest_json`.
+Retain the returned exact `prepared_json` and `prepared_sha256` on the trusted
+controller. `action: receive` with those retained values repeats preflight in
+check mode. Actual receive also requires `allow_changes: true`. See the module's
+Ansible examples with `ansible-doc cmdmesh.proxmox.lxc_persistence_receive`.
+
+The request contains these required fields:
+
+| Field | Meaning |
+| --- | --- |
+| `schema_version` | Integer `1` |
+| `operation_id` | New 64-character lowercase hexadecimal operation identity |
+| `manifest_sha256` | Hash from the separately trusted completed-backup receipt |
+| `target` | Explicit origin/node, host fingerprints, exact supported package versions, pool name/GUID, empty parent name/GUID and owner tag |
+| `tools` | Exact `/usr/sbin/zfs` and `/usr/sbin/zpool` paths and independently qualified binary hashes |
+| `streams` | `data` and `config` private plaintext files, each with absolute path, byte count and authenticated plaintext SHA256 |
+
+The target host uses the source observer's three host fingerprints and package
+keys. The current supported profile remains PVE9/container6/ZFS2.4. The target
+parent must already exist, be a locally owned ZFS filesystem, have `canmount=off`
+and `mountpoint=none`, and contain no child, snapshot or bookmark. Preparation
+does not create it. A same-host target must not overlap the original datasets.
+The module does not create a pool, change guest configuration or obtain access.
+
+**Authenticate before preparation.** The controller must fetch ciphertexts,
+compare them to its completed-backup receipt, authenticate decryption with the
+original recovery identity, and verify the plaintext manifest against the
+externally retained manifest hash. It then records the plaintext stream hashes
+in the request. Those stream hashes are controller assertions; a hash supplied
+by a backup store or a newly calculated hash of an untrusted file is insufficient.
+The module never receives the recovery key. Inputs are full, single-filesystem
+`zfs send -p` streams from this profile, not arbitrary replication packages.
+
+Plaintext files and their containing directory must belong to the executing user,
+with modes0600 and0700 respectively. Symlinks, multiple links, changed files and
+shared data/config files refuse. Execution hashes and copies each input into a
+sealed anonymous descriptor before dispatch; the receiver cannot consume later
+changes to a path. Each stream is limited to64MiB. The original private files
+remain in place for the operator's retention policy.
+
+The parent GUID, pool GUID and host identity bind one permanent consumed claim.
+A new operation ID or alias cannot bypass a previous attempt. Before each
+receive, the module journals intent and rechecks the exact target. It invokes
+`zfs receive -u` with explicit local overrides: `mountpoint=none`, `canmount=off`,
+`readonly=on`, `exec=off`, `devices=off`, `setuid=off`, both shares off, and the
+target's owner tag. It never uses force, rollback, resume, abort or name-rewrite
+flags. The behavior follows the [OpenZFS receive contract](https://openzfs.github.io/openzfs-docs/man/8/zfs-receive.8.html).
+
+The receiver requires Linux pidfds, sealed memfds, procfs and the default child
+reaper. An incompatible reaper refuses during preparation. It is armed and
+journaled before dispatch. A private PID descriptor
+targets that exact process on timeout. Native output is bounded and retained in
+private journal files; failures expose static codes rather than exception text.
+An unkillable receiver remains explicitly uncertain. There is no automatic retry,
+dataset deletion, ownership repair or cleanup of partial results.
+
+Postchecks require exactly the two new filesystems and their expected snapshots,
+the snapshot GUIDs in the trusted manifest, safe locally set properties, unchanged
+parent/pool/host identity and unchanged input files. Successful output has
+`received_verified: true`, but `restore_verified`, `application_verified` and
+`source_unavailable_verified` all remain false. A completed receive does not prove
+that SQLite records, credentials or application permissions work. Those require
+separate mounted-data and authenticated application tests in the isolated guest.
+
+Twenty-three focused cases cover the receive state transitions and native-output
+parsers, including existing or foreign parents/children, mounted or writable
+results, wrong pool/snapshot GUIDs, changed private inputs, timeout, failed arming,
+failed completion publication, replay with a new operation ID, check/disabled
+modes and actual Ansible redaction/traceback handling. They use synthetic platform
+observations and do not qualify a native receive.
+
 ## Recovery boundary
 
 Restore must work with the source VM stopped and its disks unavailable to the

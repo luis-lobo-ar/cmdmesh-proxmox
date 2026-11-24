@@ -129,6 +129,11 @@ only; real backup requires `allow_changes: true`. The local backup tests and a
 native running-source observation pass. Native stopped-source backup, rebuild
 and restore remain unqualified. See the [action contract and examples](docs/persistence-profile.md#ansible-entry-point).
 
+The separate developing `lxc_persistence_receive` module receives independently
+authenticated data/config streams into absent datasets below an empty owned
+parent. It keeps them unmounted and read-only, checks their snapshot GUIDs, and
+never reports application recovery. See the [receive contract](docs/persistence-profile.md#unmounted-receive).
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
