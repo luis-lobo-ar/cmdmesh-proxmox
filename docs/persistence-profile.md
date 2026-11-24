@@ -60,6 +60,19 @@ parent death before gate release and malformed deep result frames. CI builds the
 standard tools in private project scratch so these tests do not silently skip.
 These component tests do not qualify a real snapshot, NAS write, restore or reboot.
 
+`persistence_stream.encrypt_manifest` shares the same gated worker, limits,
+durable arming and independent-readback requirement. The action layer must first
+validate and construct the manifest; this component freezes up to1MiB of its
+bytes in an anonymous, sealed Linux memfd. The worker verifies its length/hash
+and seals before standard age reads it. Plaintext is not stored on the NAS or
+placed in arguments/journals. Arming records retain its size and hash only.
+There is no producer subprocess for this path: `source_kind` is `manifest` and
+`producer_exit_code` is null. Snapshot results retain actual producer exit codes.
+Eight additional cases cover real-age roundtrip/produced hash, seals before
+dispatch, pre-dispatch input limits, encryption failure, incorrect producer
+frames, missing seals, input-hash mismatch and ciphertext overflow. Semantic validation
+and accepted-backup publication remain the action layer's responsibility.
+
 ## Source-state observer
 
 `persistence_observe.observe(request)` is the read-only native source observer.
@@ -110,7 +123,11 @@ actual pinned guard/request contract. Native API trials proved that PVE returns
 `/pending` rows in varying order even when every value is identical. The observer
 sorts those rows by their unique key and rejects malformed or duplicate keys;
 it preserves every value, pending marker and deletion marker. Real changes still
-refuse. Full native qualification remains pending.
+refuse. A disposable running-source trial and independent retained-evidence audit
+have passed the native observer/transport/application preservation checks. Its
+result correctly remained unquiesced with no consistent application snapshot and
+`backup_verified: false`. Stopped-state collection, snapshot/NAS writes, backup,
+rootfs rebuild, restore and native maintenance/reboot remain unqualified.
 
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling

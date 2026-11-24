@@ -62,6 +62,183 @@ class StreamTests(unittest.TestCase):
             for role, p in (("zfs", producer), ("age", Path(AGE)))
         }
 
+    def test_manifest_roundtrip_uses_sealed_fd_and_no_producer(self):
+        raw = b'{"document_type":"synthetic-manifest","value":"not-in-journal"}'
+        tools = {
+            "age": {
+                "path": str(Path(AGE).resolve()),
+                "sha256": hashlib.sha256(Path(AGE).read_bytes()).hexdigest(),
+            }
+        }
+        result = stream.encrypt_manifest(
+            raw, self.recipient, self.fd, tools, journal_fd=self.journal_fd
+        )
+        self.assertEqual(result["source_kind"], "manifest")
+        self.assertIsNone(result["producer_exit_code"])
+        self.assertEqual(result["encryptor_exit_code"], 0)
+        self.assertTrue(result["file_fsynced"] and result["group_stopped"])
+        self.assertEqual(
+            result["ciphertext_sha256"],
+            hashlib.sha256(self.output.read_bytes()).hexdigest(),
+        )
+        actual = subprocess.run(
+            [AGE, "--decrypt", "--identity", str(self.key), str(self.output)],
+            capture_output=True,
+            timeout=10,
+        )
+        self.assertEqual(actual.returncode, 0)
+        self.assertEqual(actual.stdout, raw)
+        armed = json.loads(self.journal.read_bytes())
+        self.assertEqual(
+            armed["parameters"]["input_sha256"], hashlib.sha256(raw).hexdigest()
+        )
+        self.assertEqual(armed["parameters"]["input_bytes"], len(raw))
+        self.assertNotIn(b"not-in-journal", self.journal.read_bytes())
+        self.assertEqual(
+            sorted(p.name for p in self.root.iterdir()),
+            ["armed.json", "data.zfs.age", "identity.agekey"],
+        )
+
+    def test_manifest_input_is_sealed_before_dispatch(self):
+        import fcntl
+
+        raw = b'{"manifest":"unchanged"}'
+        tools = {
+            "age": {
+                "path": str(Path(AGE).resolve()),
+                "sha256": hashlib.sha256(Path(AGE).read_bytes()).hexdigest(),
+            }
+        }
+        original = os.fsync
+        observed = []
+
+        def inspect_seals(fd):
+            if fd == self.journal_fd:
+                armed = json.loads(self.journal.read_bytes())
+                input_fd = armed["parameters"]["input_fd"]
+                with self.assertRaises(OSError):
+                    os.pwrite(input_fd, b"changed", 0)
+                observed.append(fcntl.fcntl(input_fd, fcntl.F_GET_SEALS))
+            return original(fd)
+
+        with mock.patch.object(stream.os, "fsync", side_effect=inspect_seals):
+            stream.encrypt_manifest(
+                raw, self.recipient, self.fd, tools, journal_fd=self.journal_fd
+            )
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(
+            observed[0],
+            fcntl.F_SEAL_WRITE
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_SEAL,
+        )
+
+    def test_invalid_manifest_bytes_refuse_before_any_tool_dispatch(self):
+        tools = {
+            "age": {
+                "path": str(Path(AGE).resolve()),
+                "sha256": hashlib.sha256(Path(AGE).read_bytes()).hexdigest(),
+            }
+        }
+        for raw in (None, "not bytes", b"", b"x" * 1048577):
+            with self.subTest(kind=type(raw).__name__), self.assertRaises(
+                stream.StreamError
+            ):
+                stream.encrypt_manifest(
+                    raw, self.recipient, self.fd, tools, journal_fd=self.journal_fd
+                )
+        self.assertEqual(self.output.stat().st_size, 0)
+        self.assertEqual(self.journal.stat().st_size, 0)
+
+    def test_manifest_encryptor_failure_cannot_be_success(self):
+        tools = self.tools("sys.exit(0)")
+        # Valid syntax with an invalid bech32 checksum: standard age rejects it.
+        with self.assertRaises(stream.StreamError) as failed:
+            stream.encrypt_manifest(
+                b'{"manifest":"test"}',
+                "age1" + "q" * 58,
+                self.fd,
+                {"age": tools["age"]},
+                journal_fd=self.journal_fd,
+            )
+        self.assertEqual(failed.exception.command_outcome, "failed")
+        self.assertTrue(failed.exception.group_stopped)
+        self.assertIsNone(failed.exception.producer_exit_code)
+        self.assertNotEqual(failed.exception.encryptor_exit_code, 0)
+
+    def test_manifest_cannot_report_a_subprocess_exit_that_never_existed(self):
+        tools = self.tools("sys.exit(0)")
+        worker = "import json;print(json.dumps({'producer_exit_code':0,'encryptor_exit_code':0,'file_fsynced':True,'ciphertext_bytes':1,'ciphertext_sha256':'a'*64}))"
+        with mock.patch.object(stream, "WORKER", worker), self.assertRaises(
+            stream.StreamError
+        ) as failed:
+            stream.encrypt_manifest(
+                b"{}",
+                self.recipient,
+                self.fd,
+                {"age": tools["age"]},
+                journal_fd=self.journal_fd,
+            )
+        self.assertEqual(failed.exception.code, "persistence-stream-result-invalid")
+        self.assertTrue(failed.exception.group_stopped)
+
+    def test_unsealed_manifest_is_rejected_by_the_worker(self):
+        import fcntl
+
+        tools = self.tools("sys.exit(0)")
+        original = fcntl.fcntl
+
+        def omit_seals(fd, command, *args):
+            return 0 if command == fcntl.F_ADD_SEALS else original(fd, command, *args)
+
+        with mock.patch.object(
+            stream.fcntl, "fcntl", side_effect=omit_seals
+        ), self.assertRaises(stream.StreamError) as failed:
+            stream.encrypt_manifest(
+                b"{}",
+                self.recipient,
+                self.fd,
+                {"age": tools["age"]},
+                journal_fd=self.journal_fd,
+            )
+        self.assertTrue(failed.exception.group_stopped)
+        self.assertEqual(self.output.stat().st_size, 0)
+
+    def test_worker_checks_the_sealed_input_hash(self):
+        tools = self.tools("sys.exit(0)")
+        original = stream._encrypt
+
+        def changed(source, *args, **kwargs):
+            return original(dict(source, input_sha256="0" * 64), *args, **kwargs)
+
+        with mock.patch.object(
+            stream, "_encrypt", side_effect=changed
+        ), self.assertRaises(stream.StreamError) as failed:
+            stream.encrypt_manifest(
+                b"{}",
+                self.recipient,
+                self.fd,
+                {"age": tools["age"]},
+                journal_fd=self.journal_fd,
+            )
+        self.assertTrue(failed.exception.group_stopped)
+        self.assertEqual(self.output.stat().st_size, 0)
+
+    def test_manifest_ciphertext_limit_is_enforced(self):
+        tools = self.tools("sys.exit(0)")
+        with self.assertRaises(stream.StreamError) as failed:
+            stream.encrypt_manifest(
+                b"x" * 8192,
+                self.recipient,
+                self.fd,
+                {"age": tools["age"]},
+                journal_fd=self.journal_fd,
+                max_ciphertext_bytes=1024,
+            )
+        self.assertTrue(failed.exception.group_stopped)
+        self.assertLessEqual(self.output.stat().st_size, 1024)
+
     def run_stream(self, tools, **kwargs):
         return stream.encrypt_snapshot(
             self.snapshot,

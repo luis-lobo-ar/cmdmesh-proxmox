@@ -19,16 +19,32 @@ import sys
 import time
 
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
-WORKER = """import hashlib,json,os,resource,subprocess,sys
+WORKER = """import fcntl,hashlib,json,os,resource,subprocess,sys
 p=json.loads(sys.argv[1]);out=p['fd']
 gate=os.read(p['gate'],4);os.close(p['gate'])
 if gate!=b'RUN\\n':sys.exit(125)
 resource.setrlimit(resource.RLIMIT_FSIZE,(p['max_bytes'],p['max_bytes']))
-producer=subprocess.Popen([p['zfs'],'send','-p',p['snapshot']],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE)
+producer=None
+if p['kind']=='snapshot':
+ producer=subprocess.Popen([p['zfs'],'send','-p',p['snapshot']],stdin=subprocess.DEVNULL,stdout=subprocess.PIPE)
+ source=producer.stdout
+elif p['kind']=='manifest':
+ info=os.fstat(p['input_fd']);seals=fcntl.F_SEAL_WRITE|fcntl.F_SEAL_GROW|fcntl.F_SEAL_SHRINK|fcntl.F_SEAL_SEAL
+ if info.st_size!=p['input_bytes'] or fcntl.fcntl(p['input_fd'],fcntl.F_GET_SEALS)!=seals:raise RuntimeError('unsealed manifest')
+ checksum=hashlib.sha256();count=0
+ while True:
+  chunk=os.read(p['input_fd'],65536)
+  if not chunk:break
+  count+=len(chunk)
+  if count>p['input_bytes']:raise RuntimeError('manifest input limit')
+  checksum.update(chunk)
+ if count!=p['input_bytes'] or checksum.hexdigest()!=p['input_sha256']:raise RuntimeError('manifest input changed')
+ os.lseek(p['input_fd'],0,os.SEEK_SET);source=p['input_fd']
+else:raise RuntimeError('unsupported input')
 try:
- encryptor=subprocess.Popen([p['age'],'--encrypt','--recipient',p['recipient']],stdin=producer.stdout,stdout=subprocess.PIPE)
+ encryptor=subprocess.Popen([p['age'],'--encrypt','--recipient',p['recipient']],stdin=source,stdout=subprocess.PIPE)
 finally:
- producer.stdout.close()
+ if producer is not None:producer.stdout.close()
 checksum=hashlib.sha256();count=0
 while True:
  chunk=encryptor.stdout.read(65536)
@@ -40,9 +56,9 @@ while True:
   if written<=0:raise RuntimeError('ciphertext write failed')
   checksum.update(pending[:written]);count+=written;pending=pending[written:]
 encryptor.stdout.close()
-consumer_code=encryptor.wait();producer_code=producer.wait()
+consumer_code=encryptor.wait();producer_code=producer.wait() if producer is not None else None
 synced=False
-if consumer_code==0 and producer_code==0:
+if consumer_code==0 and producer_code in (0,None):
  os.fsync(out);synced=True
 print(json.dumps({'producer_exit_code':producer_code,'encryptor_exit_code':consumer_code,'file_fsynced':synced,'ciphertext_bytes':count,'ciphertext_sha256':checksum.hexdigest()}),flush=True)
 sys.exit(0 if synced else 1)
@@ -233,6 +249,87 @@ def encrypt_snapshot(
         and not ({".", ".."} & set(snapshot.split("@", 1)[0].split("/"))),
         "persistence-stream-snapshot-invalid",
     )
+    return _encrypt(
+        {"kind": "snapshot", "snapshot": snapshot},
+        recipient,
+        output_fd,
+        tools,
+        journal_fd=journal_fd,
+        timeout_seconds=timeout_seconds,
+        max_ciphertext_bytes=max_ciphertext_bytes,
+    )
+
+
+def encrypt_manifest(
+    raw,
+    recipient,
+    output_fd,
+    tools,
+    *,
+    journal_fd,
+    timeout_seconds=60,
+    max_ciphertext_bytes=2097152,
+):
+    """Encrypt already-validated manifest bytes without a plaintext disk file.
+
+    The action layer owns semantic manifest validation. This component only
+    bounds and freezes its bytes; age consumes an anonymous sealed descriptor.
+    """
+    require(
+        type(raw) is bytes and 0 < len(raw) <= 1048576,
+        "persistence-stream-manifest-invalid",
+    )
+    fd = None
+    try:
+        fd = os.memfd_create(
+            "cmdmesh-backup-manifest", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+        )
+        os.fchmod(fd, 0o600)
+        pending = memoryview(raw)
+        while pending:
+            written = os.write(fd, pending)
+            require(written > 0, "persistence-stream-manifest-write-failed")
+            pending = pending[written:]
+        os.lseek(fd, 0, os.SEEK_SET)
+        fcntl.fcntl(
+            fd,
+            fcntl.F_ADD_SEALS,
+            fcntl.F_SEAL_WRITE
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_SEAL,
+        )
+        return _encrypt(
+            {
+                "kind": "manifest",
+                "input_fd": fd,
+                "input_bytes": len(raw),
+                "input_sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            recipient,
+            output_fd,
+            tools,
+            journal_fd=journal_fd,
+            timeout_seconds=timeout_seconds,
+            max_ciphertext_bytes=max_ciphertext_bytes,
+        )
+    except OSError:
+        raise StreamError("persistence-stream-manifest-input-unavailable") from None
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _encrypt(
+    source,
+    recipient,
+    output_fd,
+    tools,
+    *,
+    journal_fd,
+    timeout_seconds,
+    max_ciphertext_bytes,
+):
     require(
         type(recipient) is str
         and re.fullmatch(r"age1[023456789acdefghjklmnpqrstuvwxyz]{58}", recipient),
@@ -250,7 +347,7 @@ def encrypt_snapshot(
         type(output_fd) is int
         and output_fd > 2
         and type(tools) is dict
-        and set(tools) == {"age", "zfs"}
+        and set(tools) == ({"age", "zfs"} if source["kind"] == "snapshot" else {"age"})
         and type(journal_fd) is int
         and journal_fd > 2
         and journal_fd != output_fd,
@@ -296,7 +393,7 @@ def encrypt_snapshot(
         raise StreamError("persistence-stream-input-unavailable") from None
     parameters = {
         **paths,
-        "snapshot": snapshot,
+        **source,
         "recipient": recipient,
         "fd": output_fd,
         "max_bytes": max_ciphertext_bytes,
@@ -312,7 +409,8 @@ def encrypt_snapshot(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            pass_fds=(output_fd, gate_read),
+            pass_fds=(output_fd, gate_read)
+            + ((source["input_fd"],) if source["kind"] == "manifest" else ()),
             start_new_session=True,
             env=ENV,
         )
@@ -421,9 +519,15 @@ def encrypt_snapshot(
             "persistence-stream-result-invalid",
         )
         require(
-            all(
-                type(result[k]) is int and -128 <= result[k] <= 255
-                for k in ("producer_exit_code", "encryptor_exit_code")
+            type(result["encryptor_exit_code"]) is int
+            and -128 <= result["encryptor_exit_code"] <= 255
+            and (
+                (
+                    type(result["producer_exit_code"]) is int
+                    and -128 <= result["producer_exit_code"] <= 255
+                )
+                if source["kind"] == "snapshot"
+                else result["producer_exit_code"] is None
             )
             and type(result["file_fsynced"]) is bool
             and type(result["ciphertext_bytes"]) is int
@@ -434,7 +538,7 @@ def encrypt_snapshot(
         )
         if (
             code != 0
-            or result["producer_exit_code"] != 0
+            or (source["kind"] == "snapshot" and result["producer_exit_code"] != 0)
             or result["encryptor_exit_code"] != 0
         ):
             raise StreamError(
@@ -455,6 +559,7 @@ def encrypt_snapshot(
             tool(reference)
         return {
             **result,
+            "source_kind": source["kind"],
             "command_outcome": "succeeded",
             "group_stopped": True,
             "worker_pid": pid,
