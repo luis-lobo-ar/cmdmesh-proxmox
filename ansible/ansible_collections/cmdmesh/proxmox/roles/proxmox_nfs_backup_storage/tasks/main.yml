@@ -3,6 +3,7 @@
   ansible.builtin.assert:
     that:
       - proxmox_nfs_backup_storage_enabled | bool
+      - proxmox_nfs_backup_storage_create_only is boolean
       - proxmox_nfs_backup_storage_id is regex('^[a-z0-9-]+$')
       - proxmox_nfs_backup_storage_server | length > 0
       - proxmox_nfs_backup_storage_export is match('^/\\S+$')
@@ -13,12 +14,6 @@
     fail_msg: >-
       The NFS target must be an explicit backup-only Proxmox storage with
       validated identifiers and mount options.
-
-- name: Install NFS client support
-  ansible.builtin.apt:
-    name: nfs-common
-    state: present
-    update_cache: false
 
 - name: Inspect existing Proxmox backup storage
   ansible.builtin.command:
@@ -53,6 +48,47 @@
       - proxmox_nfs_backup_storage_current.type == 'nfs'
     fail_msg: Existing storage type differs. No replacement is authorized.
   when: proxmox_nfs_backup_storage_query.rc == 0
+
+- name: Refuse adopting storage in create-only mode
+  ansible.builtin.assert:
+    that:
+      - proxmox_nfs_backup_storage_query.rc != 0
+    fail_msg: Create-only NFS storage already exists. Reconcile the prior operation; do not adopt or replay it.
+  when: proxmox_nfs_backup_storage_create_only | bool
+
+- name: Inspect new storage mountpoint without following symlinks
+  ansible.builtin.stat:
+    path: "/mnt/pve/{{ proxmox_nfs_backup_storage_id }}"
+    follow: false
+  register: proxmox_nfs_backup_storage_mountpoint_before
+  when: proxmox_nfs_backup_storage_query.rc != 0
+
+- name: Refuse covering an existing path with a new NFS mount
+  ansible.builtin.assert:
+    that:
+      - not proxmox_nfs_backup_storage_mountpoint_before.stat.exists
+    fail_msg: The new NFS mountpoint already exists. Inspect its ownership and backing before a separately reviewed operation.
+  when: proxmox_nfs_backup_storage_query.rc != 0
+
+- name: Install NFS client support
+  ansible.builtin.apt:
+    name: nfs-common
+    state: present
+    update_cache: false
+
+- name: Recheck new mountpoint after package preparation
+  ansible.builtin.stat:
+    path: "/mnt/pve/{{ proxmox_nfs_backup_storage_id }}"
+    follow: false
+  register: proxmox_nfs_backup_storage_mountpoint_final
+  when: proxmox_nfs_backup_storage_query.rc != 0
+
+- name: Require the new mountpoint to remain absent
+  ansible.builtin.assert:
+    that:
+      - not proxmox_nfs_backup_storage_mountpoint_final.stat.exists
+    fail_msg: The NFS output path appeared during preparation. No storage creation is authorized.
+  when: proxmox_nfs_backup_storage_query.rc != 0
 
 - name: Add Proxmox NFS backup storage
   ansible.builtin.command:

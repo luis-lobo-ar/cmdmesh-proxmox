@@ -3,7 +3,8 @@
 Reusable Proxmox inventory, Ansible operations and a Terraform LXC module. Each
 component works independently; CmdMesh adds discovery and execution controls.
 
-Version 0.1 is locally tested against synthetic HTTPS and guest-command fixtures.
+The inventory executable is 0.1.0, native inspector 0.4.0 and Ansible collection 0.2.2.
+They are versioned separately. Local tests use synthetic HTTPS and guest-command fixtures.
 It is **not** certified for every Proxmox version, storage backend or server model.
 No infrastructure is changed by installing this repository.
 
@@ -107,7 +108,19 @@ behavior is therefore assessment with `--check`, or refusal without approval.
 This setting does not replace human change approval, host selection or backups.
 Use a single explicit host/group and `--limit`; never use an unreviewed broad
 inventory. See the [collection guide](ansible/ansible_collections/cmdmesh/proxmox/README.md)
-for all eleven roles and their safeguards.
+for all twelve roles and their safeguards.
+
+For a new backup-only NFS registration, the role's explicit
+`proxmox_nfs_backup_storage_create_only: true` refuses existing storage IDs before
+package changes. New mountpoints must be absent, including symlinks or uncovered
+directories, and are checked again after dependency preparation. Existing-store
+management remains available with the default false value. Storage status and a
+successful mount do not prove backup coverage or recoverability. The fixed
+[persistence profile](docs/persistence-profile.md) is still under development.
+The separate `proxmox_nfs_backup_create` role (collection 0.2.2) gives new-store
+recipes a resolvable capability boundary: an older collection fails before
+connecting instead of ignoring a new variable. The inventory executable and
+inspection protocol versions are unchanged.
 
 ## Terraform LXC module
 

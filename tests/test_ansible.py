@@ -17,7 +17,9 @@ ANSIBLE = shutil.which("ansible-playbook")
 @unittest.skipUnless(ANSIBLE, "ansible-playbook is required for behavioral role tests")
 class GuestRoleTests(unittest.TestCase):
     def run_role(self, role, variables, check=False, initial=None):
-        with tempfile.TemporaryDirectory() as work:
+        scratch = ROOT / ".generated"
+        scratch.mkdir(mode=0o700, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="role-test-", dir=scratch) as work:
             work = Path(work)
             (work / "pct").symlink_to(ROOT / "tests/fixtures/fake_pct.py")
             for tool in ("pvesh", "pvesm"):
@@ -43,7 +45,8 @@ class GuestRoleTests(unittest.TestCase):
                                     env={**os.environ, "ANSIBLE_COLLECTIONS_PATH": str(COLLECTIONS),
                                          "PATH": str(work) + os.pathsep + os.environ["PATH"],
                                          "FAKE_PCT_STATE": str(state), "FAKE_PCT_LOG": str(log),
-                                         "ANSIBLE_NOCOLOR": "1", "ANSIBLE_LOCAL_TEMP": str(work / "ansible")})
+                                         "ANSIBLE_NOCOLOR": "1", "ANSIBLE_LOCAL_TEMP": str(work / "ansible"),
+                                         "ANSIBLE_REMOTE_TEMP": str(work / "remote"), "TMPDIR": str(work)})
             calls = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             return result, json.loads(state.read_text()), calls
 
@@ -136,6 +139,51 @@ class GuestRoleTests(unittest.TestCase):
                 "proxmox_nfs_backup_storage_status_delay": 0,
             }, check=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_create_only_refuses_an_existing_storage_before_package_changes(self):
+        with mock.patch.dict(os.environ, {"FAKE_NFS_STATUS": "active"}):
+            result, _, _ = self.run_role("nfs_backup_storage", {
+                "proxmox_nfs_backup_storage_enabled": True,
+                "proxmox_nfs_backup_storage_create_only": True,
+                "proxmox_nfs_backup_storage_id": "demo-backup",
+                "proxmox_nfs_backup_storage_server": "backup.example.invalid",
+                "proxmox_nfs_backup_storage_export": "/backups",
+            }, check=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Create-only NFS storage already exists", result.stdout)
+        self.assertNotIn("TASK [cmdmesh.proxmox.proxmox_nfs_backup_storage : Install NFS client support]", result.stdout)
+
+    def test_new_storage_check_does_not_create_or_claim_mount_readiness(self):
+        with mock.patch.dict(os.environ, {"FAKE_NFS_EXISTING": "false"}):
+            result, _, _ = self.run_role("nfs_backup_storage", {
+                "proxmox_nfs_backup_storage_enabled": True,
+                "proxmox_nfs_backup_storage_create_only": True,
+                "proxmox_nfs_backup_storage_id": "demo-backup",
+                "proxmox_nfs_backup_storage_server": "backup.example.invalid",
+                "proxmox_nfs_backup_storage_export": "/backups",
+            }, check=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Require the new mountpoint to remain absent", result.stdout)
+        self.assertIn("skipping: [pve-test]", result.stdout)
+
+    def test_distinct_create_role_refuses_existing_storage_by_default(self):
+        result, _, _ = self.run_role("nfs_backup_create", {
+            "proxmox_nfs_backup_storage_enabled": True,
+            "proxmox_nfs_backup_storage_id": "demo-backup",
+            "proxmox_nfs_backup_storage_server": "backup.example.invalid",
+            "proxmox_nfs_backup_storage_export": "/backups",
+        }, check=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Create-only NFS storage already exists", result.stdout)
+        self.assertNotIn("TASK [cmdmesh.proxmox.proxmox_nfs_backup_storage : Install NFS client support]", result.stdout)
+
+    def test_distinct_create_role_cannot_disable_its_create_only_contract(self):
+        result, _, _ = self.run_role("nfs_backup_create", {
+            "proxmox_nfs_backup_storage_create_only": False,
+        }, check=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("New backup storage requires exactly one target and create-only mode", result.stdout)
+        self.assertNotIn("TASK [cmdmesh.proxmox.proxmox_nfs_backup_storage : Inspect existing Proxmox backup storage]", result.stdout)
 
 
 if __name__ == "__main__":
