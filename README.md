@@ -109,6 +109,14 @@ Use a single explicit host/group and `--limit`; never use an unreviewed broad
 inventory. See the [collection guide](ansible/ansible_collections/cmdmesh/proxmox/README.md)
 for all eleven roles and their safeguards.
 
+For a new backup-only NFS registration, the role's explicit
+`proxmox_nfs_backup_storage_create_only: true` refuses existing storage IDs before
+package changes. New mountpoints must be absent, including symlinks or uncovered
+directories, and are checked again after dependency preparation. Existing-store
+management remains available with the default false value. Storage status and a
+successful mount do not prove backup coverage or recoverability. The fixed
+[persistence profile](docs/persistence-profile.md) is still under development.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example

@@ -137,6 +137,32 @@ class GuestRoleTests(unittest.TestCase):
             }, check=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_create_only_refuses_an_existing_storage_before_package_changes(self):
+        with mock.patch.dict(os.environ, {"FAKE_NFS_STATUS": "active"}):
+            result, _, _ = self.run_role("nfs_backup_storage", {
+                "proxmox_nfs_backup_storage_enabled": True,
+                "proxmox_nfs_backup_storage_create_only": True,
+                "proxmox_nfs_backup_storage_id": "demo-backup",
+                "proxmox_nfs_backup_storage_server": "backup.example.invalid",
+                "proxmox_nfs_backup_storage_export": "/backups",
+            }, check=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Create-only NFS storage already exists", result.stdout)
+        self.assertNotIn("TASK [cmdmesh.proxmox.proxmox_nfs_backup_storage : Install NFS client support]", result.stdout)
+
+    def test_new_storage_check_does_not_create_or_claim_mount_readiness(self):
+        with mock.patch.dict(os.environ, {"FAKE_NFS_EXISTING": "false"}):
+            result, _, _ = self.run_role("nfs_backup_storage", {
+                "proxmox_nfs_backup_storage_enabled": True,
+                "proxmox_nfs_backup_storage_create_only": True,
+                "proxmox_nfs_backup_storage_id": "demo-backup",
+                "proxmox_nfs_backup_storage_server": "backup.example.invalid",
+                "proxmox_nfs_backup_storage_export": "/backups",
+            }, check=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Require the new mountpoint to remain absent", result.stdout)
+        self.assertIn("skipping: [pve-test]", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
