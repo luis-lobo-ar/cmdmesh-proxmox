@@ -440,6 +440,10 @@ PVE returns storage `content` members in per-process Perl hash order. Preparatio
 canonicalizes only that comma-separated set, preserving every member and all
 other storage fields. Reordered members are equivalent; additions, removals,
 duplicates, malformed values and other storage changes do not bypass drift checks.
+PVE pending rows are also compared in key order while retaining every value;
+duplicate rows and pending/deleted settings refuse. The config parser's optional
+single trailing description newline is accepted without trimming or changing
+the description text. Other description changes remain a mismatch.
 
 Success reports `provisioned_verified` only; `rebuild_verified` and
 `restore_verified` stay false. A failed/uncertain create preserves its claim and

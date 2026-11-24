@@ -676,9 +676,13 @@ def validate_target_config(request, config):
         ("arch", "amd64"),
         ("ostype", "ubuntu"),
         ("hostname", expected["hostname"]),
-        ("description", expected["description"]),
     ):
         require(config.get(key) == value, "target-config")
+    require(
+        config.get("description")
+        in {expected["description"], expected["description"] + "\n"},
+        "target-description",
+    )
     for key, value in (
         ("cores", 1),
         ("memory", 512),
@@ -709,6 +713,22 @@ def validate_target_config(request, config):
     return volume
 
 
+def ordered_pending(rows):
+    require(type(rows) is list and len(rows) <= 4096, "target-pending")
+    require(
+        all(
+            type(row) is dict
+            and state.matches(r"[A-Za-z0-9_.-]{1,128}", row.get("key"))
+            and "pending" not in row
+            and not row.get("delete")
+            for row in rows
+        ),
+        "target-pending",
+    )
+    require(len({row["key"] for row in rows}) == len(rows), "target-pending")
+    return sorted(rows, key=lambda row: row["key"])
+
+
 def verify_target(request, prepared):
     node, vmid = request["source_request"]["source"]["selector"]["node"], str(
         request["target"]["vmid"]
@@ -723,15 +743,7 @@ def verify_target(request, prepared):
     )
     config = get(path + "/config")
     volume = validate_target_config(request, config)
-    pending = get(path + "/pending")
-    require(
-        type(pending) is list
-        and all(
-            type(row) is dict and "pending" not in row and not row.get("delete")
-            for row in pending
-        ),
-        "target-pending",
-    )
+    pending = ordered_pending(get(path + "/pending"))
     rootfs = Path(observe.native(["/usr/sbin/pvesm", "path", volume]).decode().strip())
     require(
         rootfs == Path("/var/lib/vz/images") / vmid / ("vm-" + vmid + "-disk-0.raw")
@@ -767,7 +779,8 @@ def verify_target(request, prepared):
         config == get(path + "/config")
         and observe.stable(info) == observe.stable(rootfs.lstat())
         and state.canonical(get(path + "/status/current")) == state.canonical(status)
-        and state.canonical(get(path + "/pending")) == state.canonical(pending),
+        and state.canonical(ordered_pending(get(path + "/pending")))
+        == state.canonical(pending),
         "target-changed",
     )
     return {

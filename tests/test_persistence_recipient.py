@@ -504,6 +504,13 @@ class NativeShapeTests(unittest.TestCase):
             recipient.validate_target_config(request, config),
             "local:102/vm-102-disk-0.raw",
         )
+        # PVE's actual config reader terminates a stored description with LF.
+        self.assertEqual(
+            recipient.validate_target_config(
+                request, {**config, "description": config["description"] + "\n"}
+            ),
+            "local:102/vm-102-disk-0.raw",
+        )
         for key, value in (
             ("net0", "name=eth0,bridge=vmbr0"),
             ("mp0", "/srv/data,mp=/var/lib/reference-ledger"),
@@ -516,11 +523,36 @@ class NativeShapeTests(unittest.TestCase):
             ("onboot", 1),
             ("unprivileged", 0),
             ("rootfs", "local:101/vm-101-disk-0.raw,size=2G"),
+            ("description", config["description"] + "\n\n"),
+            ("description", config["description"] + " modified\n"),
         ):
             with self.subTest(key=key, value=value), self.assertRaises(
                 state.PersistenceError
             ):
                 recipient.validate_target_config(request, {**config, key: value})
+
+    def test_pending_order_is_semantic_but_values_and_unsafe_rows_are_not(self):
+        rows = [
+            {"key": "rootfs", "value": "local:102/vm-102-disk-0.raw,size=2G"},
+            {"key": "memory", "value": 512},
+        ]
+        self.assertEqual(
+            recipient.ordered_pending(rows),
+            recipient.ordered_pending(list(reversed(rows))),
+        )
+        self.assertNotEqual(
+            recipient.ordered_pending(rows),
+            recipient.ordered_pending([{**rows[0], "value": "foreign"}, rows[1]]),
+        )
+        for invalid in (
+            [*rows, rows[0]],
+            [{**rows[0], "pending": "foreign"}],
+            [{**rows[0], "delete": 1}],
+            [{"value": 512}],
+            "not-list",
+        ):
+            with self.assertRaises(state.PersistenceError):
+                recipient.ordered_pending(invalid)
 
     def test_upid_is_bound_to_node_target_operation_and_user(self):
         request = example_request()
