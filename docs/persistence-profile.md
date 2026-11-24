@@ -20,9 +20,45 @@ cannot authenticate a sender or prove a live backup.
 Eight local cases cover canonical loading, changed lineage, mixed snapshot
 generations/GUIDs, foreign siblings, extra secret fields, path traversal, boolean
 sizes, unsupported mapping, missing meaningful records and duplicate/version
-errors, floating-point mappings and deeply nested inputs. Recipient syntax is checked here; the standard age implementation must
-validate its checksum during preparation. The encrypted pipeline, native phase
-collector/driver and actual backup/rebuild/restore evidence are still pending.
+errors, floating-point mappings and deeply nested inputs. Recipient syntax is
+checked here; the standard age implementation must validate its checksum during
+preparation. Native phase collection/dispatch and actual backup/rebuild/restore
+evidence are still pending.
+
+## Local encrypted stream component
+
+`persistence_stream.encrypt_snapshot` runs a fixed full `zfs send -p` through
+standard age encryption. It accepts pinned executable references and existing
+exclusive ciphertext/journal descriptors; it cannot execute a supplied shell
+command or application hook. The caller still owns target identity, snapshot
+creation, exact NFS backing, private prefix creation and independent readback.
+The caller must also publish and fsync the containing directories before
+dispatch; descriptor-only code cannot establish directory-entry durability.
+This component requires Linux pidfds/procfs and the default child reaper.
+
+The isolated worker starts behind a pipe gate. Its PID, start ticks, code hash,
+parameters and output identity are written and fsynced to a private armed record
+before the parent releases either tool. Parent loss before release closes the
+gate without launching them. The worker hashes ciphertext as it is produced,
+handles short writes, waits for both producer and encryptor, fsyncs output, then
+reports the result. Independent readback must match that produced digest; a hash
+calculated only from mutable NAS bytes is not sufficient.
+
+The parent bounds diagnostic bytes, ciphertext bytes and the command deadline.
+It retains its child anchor until the session group is closed. A hard-NFS write
+can resist termination: the result stays uncertain and no accepted manifest may
+be written. Partial ciphertext and its consumed operation evidence stay available
+for reconciliation. Never infer backup success from age accepting a truncated
+producer stream or from the final process exit alone.
+
+Sixteen local cases use real age1.2.1 with a synthetic producer, never live ZFS:
+roundtrip/decrypt, producer failure despite successful encryption, bad recipient,
+file cap, timeout with a forked child, changed tools, nonzero offset, stderr flood,
+failed consumer with a sleeping producer, missing worker result, failed arming
+fsync, durable-before-dispatch ordering, partial writes, a hidden live descendant
+parent death before gate release and malformed deep result frames. CI builds the pinned
+standard tools in private project scratch so these tests do not silently skip.
+These component tests do not qualify a real snapshot, NAS write, restore or reboot.
 
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling

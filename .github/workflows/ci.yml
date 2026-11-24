@@ -38,10 +38,30 @@ jobs:
           TMPDIR="$PWD/.generated/tmp" cargo build --locked --manifest-path .generated/core/Cargo.toml
       - run: python -m pip install -r requirements-dev.txt
       - run: ansible-galaxy collection install -r ansible/requirements.yml -p .ansible/collections
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version: '1.23.0'
+          cache: false
+      - name: Build pinned standard age tools for real encryption tests
+        shell: bash
+        run: |
+          umask 077
+          mkdir -p .generated/age/{bin,cache,modules,tmp}
+          export GOBIN="$PWD/.generated/age/bin"
+          export GOCACHE="$PWD/.generated/age/cache"
+          export GOPATH="$PWD/.generated/age/modules"
+          export GOTMPDIR="$PWD/.generated/age/tmp"
+          export GOTOOLCHAIN=local
+          export GOPROXY=https://proxy.golang.org
+          export GOSUMDB=sum.golang.org
+          go install filippo.io/age/cmd/age@v1.2.1 filippo.io/age/cmd/age-keygen@v1.2.1
+          "$GOBIN/age" --version
       - name: Behavioral API and Ansible tests
         run: python -m unittest discover -s tests -v
         env:
           CMDMESH_BIN: ${{ github.workspace }}/.generated/core/target/debug/cmdmesh
+          CMDMESH_AGE: ${{ github.workspace }}/.generated/age/bin/age
+          CMDMESH_AGE_KEYGEN: ${{ github.workspace }}/.generated/age/bin/age-keygen
       - name: All role syntax checks
         run: python tools/check-ansible.py
       - name: Basic role lint
