@@ -186,7 +186,71 @@ changed snapshots, foreign prefixes, actual closing failure, malformed inputs,
 incomplete completion, canonical bytes, fixed executables, pair locking,
 mount drift, ENOSPC and late output changes during source/snapshot closure.
 No native snapshot or NAS write has been qualified yet.
-CLI/Ansible recipe integration remains pending while this action is reviewed.
+The Ansible module below exposes the action. Catalog/core procedure integration
+and real stopped-source qualification remain pending.
+
+## Ansible entry point
+
+`cmdmesh.proxmox.lxc_persistence` is a thin boundary over these same helpers.
+It accepts `inspect`, `prepare_backup` and `backup`. It adds no shell hooks,
+alternate executable paths, guest shutdowns, implicit retries or repairs.
+
+```yaml
+- name: Observe one declared reference source
+  cmdmesh.proxmox.lxc_persistence:
+    action: inspect
+    source_request: "{{ cmdmesh_persistence_source }}"
+
+- name: Prepare the already stopped reference source
+  cmdmesh.proxmox.lxc_persistence:
+    action: prepare_backup
+    backup_request: "{{ cmdmesh_persistence_backup }}"
+  register: preparation
+
+# Copy/review and retain the exact preparation on the trusted controller first.
+- name: Assess the retained intent without snapshot or NAS writes
+  cmdmesh.proxmox.lxc_persistence:
+    action: backup
+    prepared_json: "{{ cmdmesh_retained_prepared_json }}"
+    prepared_sha256: "{{ cmdmesh_retained_prepared_sha256 }}"
+  check_mode: true
+
+- name: Execute the separately retained approved intent once
+  cmdmesh.proxmox.lxc_persistence:
+    action: backup
+    prepared_json: "{{ cmdmesh_retained_prepared_json }}"
+    prepared_sha256: "{{ cmdmesh_retained_prepared_sha256 }}"
+    allow_changes: true
+```
+
+These variables contain the request schemas defined above, including host
+fingerprints, initialized pre-start policy, actual tool pins and mounted store;
+they are not fictional defaults to run against an arbitrary host. Select one
+explicit inventory target. Stop the owned source through its verified lifecycle
+procedure before preparation. The module never turns a running observation into
+a consistent backup by itself.
+
+Backup check mode reports `source-preflight-only`, `would_change: true` and
+`mutation_attempted: false`. It repeats the frozen source/recipient checks but
+does not create runtime state, consume an intent, check prospective NAS creation
+permissions or prove all execution postconditions. A real backup defaults to
+refusal unless `allow_changes` is explicitly true. On a permitted backup failure,
+`effects_may_exist` is conservative: inspect the root-private journal before
+further action. Request/preparation arguments are withheld from invocation
+metadata. Framework argument validation uses Ansible's no-log handling; accepted
+outputs retain their exact safe correlation hashes. The boundary suppresses
+runtime tracebacks explicitly, including when error tracing is enabled, and
+returns static errors for unexpected standard exceptions too. Cancellation and
+process termination still require independent reconciliation.
+
+Twelve boundary cases cover readonly inspection/preparation, disabled and check
+modes, changed source, exact bytes/hash forwarding, failure sanitization, actual
+Ansible argument rejection and an actual packaged-module/helper refusal before
+accessing an unsupported guard path. Real Ansible renderer cases verify early
+argument redaction, withheld failure invocations, suppressed OSError/RuntimeError/
+TypeError text with tracing enabled, and uncensored successful canonical bytes
+and hashes. The qualified development toolchain pins Ansible core2.19.4.
+These tests do not qualify a native backup.
 
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling
