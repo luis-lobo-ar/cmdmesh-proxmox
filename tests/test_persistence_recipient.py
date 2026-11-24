@@ -372,6 +372,40 @@ class RecipientTests(unittest.TestCase):
 
 
 class NativeShapeTests(unittest.TestCase):
+    def test_storage_content_order_is_not_drift_but_membership_and_other_fields_are(
+        self,
+    ):
+        original = {
+            "type": "dir",
+            "path": "/var/lib/vz",
+            "content": "rootdir,backup,vztmpl,images,iso,snippets",
+            "digest": "a" * 40,
+        }
+        reordered = {**original, "content": "iso,backup,vztmpl,images,snippets,rootdir"}
+        self.assertEqual(
+            recipient.normalize_storage(original),
+            recipient.normalize_storage(reordered),
+        )
+        self.assertEqual(
+            original["content"], "rootdir,backup,vztmpl,images,iso,snippets"
+        )
+        self.assertNotEqual(
+            recipient.normalize_storage(original),
+            recipient.normalize_storage({**original, "content": "rootdir,vztmpl"}),
+        )
+        self.assertNotEqual(
+            recipient.normalize_storage(original),
+            recipient.normalize_storage({**original, "path": "/srv/foreign"}),
+        )
+        for invalid in (
+            "rootdir,rootdir,vztmpl",
+            "rootdir,,vztmpl",
+            " rootdir,vztmpl",
+            None,
+        ):
+            with self.assertRaises(state.PersistenceError):
+                recipient.normalize_storage({**original, "content": invalid})
+
     def test_target_starting_during_filesystem_probe_is_not_a_stopped_recipient(self):
         request = example_request()
         request["source_request"]["policy"] = {"rootfs": {"uuid": "source-uuid"}}

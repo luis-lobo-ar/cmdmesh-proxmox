@@ -436,6 +436,11 @@ the actual stopped state, no pending settings, exact isolation/configuration and
 new rootfs path/size/inode/ext4 UUID, then close status, pending, native task/log
 and source checks again. The original guest/rootfs remain intact.
 
+PVE returns storage `content` members in per-process Perl hash order. Preparation
+canonicalizes only that comma-separated set, preserving every member and all
+other storage fields. Reordered members are equivalent; additions, removals,
+duplicates, malformed values and other storage changes do not bypass drift checks.
+
 Success reports `provisioned_verified` only; `rebuild_verified` and
 `restore_verified` stay false. A failed/uncertain create preserves its claim and
 partial outputs for status/reconciliation. Changing the operation ID cannot retry

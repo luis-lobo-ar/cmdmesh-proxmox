@@ -207,6 +207,22 @@ def template_facts(request):
     }
 
 
+def normalize_storage(value):
+    # PVE serializes its content-type hash in per-process Perl hash order.
+    # Sort this one semantic set; retain every member and all other fields.
+    require(
+        type(value) is dict and type(value.get("content")) is str, "storage-content"
+    )
+    members = value["content"].split(",")
+    require(
+        1 <= len(members) <= 16
+        and len(members) == len(set(members))
+        and all(state.matches(r"[a-z][a-z0-9_-]{0,31}", item) for item in members),
+        "storage-content",
+    )
+    return {**value, "content": ",".join(sorted(members))}
+
+
 def collect_preflight(request, facts, *, exclude_target=False):
     node = request["source_request"]["source"]["selector"]["node"]
     nodes = get("/nodes")
@@ -218,7 +234,7 @@ def collect_preflight(request, facts, *, exclude_target=False):
         "standalone-node",
     )
     rows = inventory(request, exclude_target=exclude_target)
-    storage = get("/storage/" + request["storage_id"])
+    storage = normalize_storage(get("/storage/" + request["storage_id"]))
     capacity = get("/nodes/" + node + "/storage/" + request["storage_id"] + "/status")
     require(
         storage.get("type") == "dir"
@@ -309,6 +325,10 @@ def validate_preflight(request, value):
         "prepared-source-owner",
     )
     storage = value["storage"]
+    require(
+        state.canonical(storage) == state.canonical(normalize_storage(storage)),
+        "prepared-storage-noncanonical",
+    )
     require(
         type(storage) is dict
         and storage.get("type") == "dir"
