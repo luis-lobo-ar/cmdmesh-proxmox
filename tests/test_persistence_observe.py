@@ -74,6 +74,38 @@ class ObserverTests(unittest.TestCase):
         path.chmod(0o600)
         return path
 
+    def test_pve_pending_row_order_is_not_a_change_but_values_and_duplicates_are(self):
+        rows = [
+            {"key": "rootfs", "value": "local:101/vm-101-disk-0.raw"},
+            {"key": "memory", "value": 512},
+        ]
+
+        def collect(pending):
+            replies = [guest()["config"], {"status": "running"}, pending, []]
+            with mock.patch.object(
+                observe, "native", side_effect=[json.dumps(v).encode() for v in replies]
+            ):
+                return observe.guest_facts(policy())
+
+        first = collect(rows)
+        self.assertEqual(first, collect(list(reversed(rows))))
+        changed = copy.deepcopy(rows)
+        changed[1]["value"] = 1024
+        self.assertNotEqual(first, collect(changed))
+        changed[1]["pending"] = 2048
+        with self.assertRaises(state.PersistenceError):
+            observe.validate_guest(policy(), collect(changed))
+        for malformed in (
+            [rows[0], rows[0]],
+            [{}],
+            [{"key": None}],
+            [{"key": "memory", "delete": 1}],
+        ):
+            with self.subTest(rows=malformed), self.assertRaises(
+                state.PersistenceError
+            ):
+                observe.validate_guest(policy(), collect(malformed))
+
     def test_early_guest_gate_rejects_unsafe_bind_network_owner_and_pending(self):
         observe.validate_guest(policy(), guest())
         reordered = guest()

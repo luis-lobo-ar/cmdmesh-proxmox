@@ -277,10 +277,23 @@ def guest_facts(policy):
         "ha-observation",
     )
     require(type(status) is dict, "guest-status")
+    require(
+        type(pending) is list
+        and len(pending) <= 4096
+        and all(
+            type(row) is dict
+            and state.matches(r"[A-Za-z0-9_.-]{1,128}", row.get("key"))
+            for row in pending
+        )
+        and len({row["key"] for row in pending}) == len(pending),
+        "guest-pending-observation",
+    )
     return {
         "config": config,
         "status": status.get("status"),
-        "pending": pending,
+        # PVE returns rows in per-process Perl hash order. Preserve all values;
+        # only key order is semantically irrelevant (proved on the native API).
+        "pending": sorted(pending, key=lambda row: row["key"]),
         "ha_membership": any(row["sid"] == "ct:" + str(policy["vmid"]) for row in ha),
     }
 

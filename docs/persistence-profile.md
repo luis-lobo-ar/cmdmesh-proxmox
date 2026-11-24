@@ -103,10 +103,14 @@ counts and hashes, never credentials or record values. `source_state(request,
 require_stopped=True)` holds that same lock across a caller's operation. It does
 not stop/start guests, create files or repair data/ownership.
 
-Twelve local cases cover unsafe guest configuration, competing/unsafe locks,
+Thirteen local cases cover unsafe guest configuration, competing/unsafe locks,
 real SQLite reads and corruption, sidecars/symlinks, exact backing, rejected guard
 substitution, trust ordering, running-state limitations, changed state and the
-actual pinned guard/request contract. Native qualification remains pending.
+actual pinned guard/request contract. Native API trials proved that PVE returns
+`/pending` rows in varying order even when every value is identical. The observer
+sorts those rows by their unique key and rejects malformed or duplicate keys;
+it preserves every value, pending marker and deletion marker. Real changes still
+refuse. Full native qualification remains pending.
 
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling
