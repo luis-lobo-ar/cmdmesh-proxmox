@@ -3,6 +3,27 @@
 This profile is under development. It does not yet qualify backup, rebuild or
 restore on a real host. The existing memory profile keeps its current semantics.
 
+## Local manifest contract
+
+The first implemented layer is `plugins/module_utils/persistence_state.py` in
+the collection. It validates the fixed reference-ledger backup description and
+derives the operation-lock identity from retained dataset GUIDs, independently
+of any CT VMID. It performs no native command, file write or restore.
+
+A manifest carries source lineage, one atomic sibling snapshot pair, meaningful
+record/configuration hashes, the explicit supported UID mapping and the two
+ciphertext artifact names, sizes and hashes. Loading requires the manifest hash
+from a separately retained trusted completion receipt. A hash taken from the
+same untrusted backup store is not that trust source. Schema validity alone
+cannot authenticate a sender or prove a live backup.
+
+Eight local cases cover canonical loading, changed lineage, mixed snapshot
+generations/GUIDs, foreign siblings, extra secret fields, path traversal, boolean
+sizes, unsupported mapping, missing meaningful records and duplicate/version
+errors, floating-point mappings and deeply nested inputs. Recipient syntax is checked here; the standard age implementation must
+validate its checksum during preparation. The encrypted pipeline, native phase
+collector/driver and actual backup/rebuild/restore evidence are still pending.
+
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling
 ZFS datasets retain its database and configuration, including application
