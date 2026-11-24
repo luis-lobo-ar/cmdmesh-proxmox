@@ -129,6 +129,65 @@ result correctly remained unquiesced with no consistent application snapshot and
 `backup_verified: false`. Stopped-state collection, snapshot/NAS writes, backup,
 rootfs rebuild, restore and native maintenance/reboot remain unqualified.
 
+## Fixed backup action API
+
+`persistence_backup.prepare_backup(request)` is read-only. Its request contains
+schema version1, a new64-hex `operation_id`, the full observer `source_request`,
+the public age recipient, and `tools` references for age and ZFS. Each reference
+has an exact SHA-256 and `path`; this prototype fixes those installed paths to
+`/usr/bin/age` and `/usr/sbin/zfs`. A request cannot select another executable.
+The source must already be stopped. Preparation checks the actual standard-age
+recipient parser with empty nonsecret input and hashes the qualified observation.
+The backup action never stops, starts or initializes an application itself.
+
+Serialize the prepared value with `persistence_state.canonical`. Retain its hash
+outside the managed host as the reviewed intent, and pass those exact bytes and
+hash to `persistence_backup.execute_backup(raw, trusted_sha256)`. Reformatting
+those bytes requires a fresh preparation. Execution repeats source/tool checks;
+there is no force switch, automatic refresh of hashes, replay or state adoption.
+
+The managed runtime is fixed at `/var/lib/cmdmesh/persistence`, with a private
+profile marker, retained-GUID-pair flock and exclusive operation journals. The
+parent and runtime must be owned/private; existing state is checked rather than
+chmodded or initialized over. A consumed intent precedes one atomic sibling
+snapshot command and any NAS prefix/write. An incomplete or failed operation
+blocks a new operation for that pair until reconciliation. Partial snapshots,
+ciphertext and journals are retained; this action performs no rollback deletion.
+
+The new backup prefix includes the owner identity and operation ID. A foreign
+prefix refuses before snapshot creation; a creation race still refuses without
+overwriting it. Actual mapped ownership and0700/0600 modes are checked. The
+shared export root is never chmodded or chowned. Both full streams and the
+validated manifest are encrypted with standard age. Independent reopened reads
+must match the worker-produced hashes and sizes. After the slower source/tool
+closing checks, snapshot GUIDs/creation transaction groups are checked again.
+The action then reopens the recorded NAS prefix by name and rechecks backing,
+registry, all ciphertext/inodes and hashes immediately before completion.
+This catches outputs renamed or modified during those closing checks. It does
+not make a mutable backup store immutable; restore must verify the trusted hashes
+again when consuming its artifacts. Snapshot command semantics follow the
+[OpenZFS snapshot contract](https://openzfs.github.io/openzfs-docs/man/master/8/zfs-snapshot.8.html);
+the exact installed CLI behavior still requires the native trial.
+
+`complete.json` is created only after the stopped-source closing checks pass.
+The returned receipt binds the manifest, its separately trusted hash, encrypted
+manifest identity, snapshot pair, source, store and ciphertext identities. Its
+`completion_sha256` hashes the exact private completion file before that extra
+return field is added; it is not a recursive self-hash. Copy the receipt to the
+trusted controller. A manifest or receipt found on the NAS alone cannot establish
+trust. `backup_verified: true` describes this action's source/artifact checks;
+it does not certify restoration, storage survival after a power loss or host-loss
+recovery. Restore qualification is a separate gate.
+
+Eighteen local action cases use real encryption, files and flocks with synthetic
+ZFS/source/mount providers. They cover preparation, a complete synthetic backup,
+replay, changed intent/source, sender failure, early/late ciphertext tampering,
+changed snapshots, foreign prefixes, actual closing failure, malformed inputs,
+incomplete completion, canonical bytes, fixed executables, pair locking,
+mount drift, ENOSPC and late output changes during source/snapshot closure.
+No native snapshot or NAS write has been qualified yet.
+CLI/Ansible recipe integration remains pending while this action is reviewed.
+
 The reference workload is a private SQLite ledger in an unprivileged, NIC-free
 LXC. Its root filesystem contains replaceable program files. Separate sibling
 ZFS datasets retain its database and configuration, including application
