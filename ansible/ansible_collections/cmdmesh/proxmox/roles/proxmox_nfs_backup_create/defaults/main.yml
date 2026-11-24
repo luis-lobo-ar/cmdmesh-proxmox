@@ -1,0 +1,2 @@
+---
+proxmox_nfs_backup_storage_create_only: true
