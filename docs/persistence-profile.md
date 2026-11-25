@@ -389,6 +389,73 @@ failed completion publication, replay with a new operation ID, check/disabled
 modes and actual Ansible redaction/traceback handling. They use synthetic platform
 observations and do not qualify a native receive.
 
+## Stopped rebuild recipient
+
+The developing `cmdmesh.proxmox.lxc_persistence_recipient` module provisions only
+the replaceable rootfs and stopped guest. It does **not** finish a rebuild.
+Local tests include a real loopback TLS create request; native provisioning is
+not yet qualified.
+
+Its `prepare` action takes `recipient_request` with schema version1, an operation
+ID, the existing `source_request`, `target`, `template` and `storage_id`.
+`target` has an absent integer `vmid`, hostname and new generation tag. `template`
+has its volume ID, exact byte count and independently qualified SHA256. Retain the
+returned canonical `prepared_json` and `prepared_sha256` on the controller.
+`provision` repeats those checks in check mode; an actual create additionally
+requires `allow_changes: true`. `status` reads the same consumed attempt and never
+reposts, including after an acknowledgement is lost. The module includes copyable
+Ansible examples through `ansible-doc cmdmesh.proxmox.lxc_persistence_recipient`.
+
+This first profile supports one standalone PVE9/container6/ZFS2.4 node, local
+directory storage at `/var/lib/vz`, at least3GiB available, and an already qualified
+Ubuntu24.04 amd64 standard template. Preparation refuses existing cluster IDs,
+configs, rootfs directories, pending target state, or different backing/template
+identities. Template bytes and source facts are rechecked during execution.
+The original stopped source's retained configuration lock stays held throughout;
+the source observer checks its record, credentials, mounts and rootfs unchanged.
+
+Creation uses one pinned, hostname/CA-verified HTTPS request to the local PVE API.
+It requires root on that already verified node. Native PAM authentication is
+assembled in memory by the installed PVE library; tickets are never request
+inputs, plans or journal fields. No account, API token or access configuration is
+created or repaired. HTTP redirects and retries are not followed.
+
+The new guest is unprivileged, protected, no NIC, no HA, no features/hooks/raw LXC
+directives, one core, 512MiB memory, zero swap, a fresh2GiB rootfs, and start/onboot
+OFF. It has normal PVE `cpulimit=1`, an aggregate CPU-time limit, not an assertion
+of instantaneous single-core execution. **No retained bind mount is supplied to
+CREATE.** PVE can mount supplied bind paths writable during template extraction,
+even with their `ro` flag; attach retained data only in a subsequent stopped
+configuration stage after setup. This module neither attaches nor initializes it.
+
+A permanent claim keyed by host identity and destination VMID precedes dispatch.
+It records the exact native UPID, complete bounded task log and result. The known
+systemd255/nesting warning is explicitly recognized without enabling nesting;
+unknown warnings, incomplete logs and errors prevent acceptance. Postchecks read
+the actual stopped state, no pending settings, exact isolation/configuration and
+new rootfs path/size/inode/ext4 UUID, then close status, pending, native task/log
+and source checks again. The original guest/rootfs remain intact.
+
+PVE returns storage `content` members in per-process Perl hash order. Preparation
+canonicalizes only that comma-separated set, preserving every member and all
+other storage fields. Reordered members are equivalent; additions, removals,
+duplicates, malformed values and other storage changes do not bypass drift checks.
+PVE pending rows are also compared in key order while retaining every value;
+duplicate rows and pending/deleted settings refuse. The config parser's optional
+single trailing description newline is accepted without trimming or changing
+the description text. Other description changes remain a mismatch.
+The fixed CPU limit accepts numeric1 or PVE's exact JSON string`"1"`; booleans,
+zero, other strings and other limits refuse. This reads the configured aggregate
+limit; it does not establish runtime enforcement while the guest is stopped.
+
+Success reports `provisioned_verified` only; `rebuild_verified` and
+`restore_verified` stay false. A failed/uncertain create preserves its claim and
+partial outputs for status/reconciliation. Changing the operation ID cannot retry
+the same target. There is no automatic deletion, adoption, start, ownership repair
+or credentials reset. Fresh first-boot guard policy, program/account installation,
+retained bind attachment and authenticated original-record tests remain later
+explicit stages.
+
 ## Recovery boundary
 
 Restore must work with the source VM stopped and its disks unavailable to the
