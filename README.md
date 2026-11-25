@@ -195,6 +195,9 @@ Each request requires ordered dispatch, acknowledged native task, and terminal
 task records. Completion binds their raw hashes and file identities.
 This component writes metadata only. Native shutdown/resume integration and its
 infrastructure qualification remain in development.
+An explicit metadata-only resolution can preserve an interrupted attempt and
+record a new baseline after the caller qualifies current state and worker
+fencing. It never retries the old native request.
 
 The internal [owner OS transition SDK](docs/persistence-profile.md#same-owner-os-transitions-developing)
 combines current admission with ordered metadata and one native request.

@@ -21,8 +21,8 @@ RUNTIME_ROOT = Path("/var/lib/cmdmesh/owner-lifecycle")
 LIMIT = 4194304
 MAX_OPERATIONS = 4096
 ROOT_UID = 0
-VERSION = 2
-ACTION_PROFILE = "owner-os-action-v1"
+VERSION = 3
+ACTION_PROFILE = "owner-os-action-v2"
 STAGES = ("dispatch", "ack", "terminal")
 RUNTIME = {
     "document_type": "cmdmesh.proxmox.owner-journal.runtime",
@@ -389,7 +389,39 @@ def _read_phases(binding, intent, slot, pending, seal):
     return validate_phase_capture(binding, intent, records, descriptors)
 
 
-def _inspect(binding, expected_head_sha256):
+def _native_result(binding, sequence, intent_sha256, phases, result):
+    """One result contract for ordinary and resolution-aware history walkers."""
+    _schema(
+        result,
+        "result",
+        {
+            "profile_sha256",
+            "sequence",
+            "intent_sha256",
+            "evidence",
+            "phase_files",
+            "phase_chain_sha256",
+        },
+    )
+    state.integer(result["sequence"], 1, MAX_OPERATIONS)
+    require(
+        result["profile_sha256"] == _digest(_profile(binding))
+        and result["sequence"] == sequence
+        and result["intent_sha256"] == intent_sha256
+        and type(result["evidence"]) is dict,
+        "result",
+    )
+    require(
+        result["phase_chain_sha256"] == phases.sha256
+        and _digest(result["phase_files"]) == phases.sha256
+        and phases.records["terminal.json"]["payload"]["native_outcome"]["accepted"]
+        is True,
+        "result-phases",
+    )
+    return _digest(result)
+
+
+def _native_inspect(binding, expected_head_sha256):
     """Read a fully coherent chain at an externally accepted head; create nothing."""
     profile = _profile(binding)
     state.digest(expected_head_sha256)
@@ -433,36 +465,7 @@ def _inspect(binding, expected_head_sha256):
         result_sha = None
         if not pending:
             result = _read(slot / "result.json", seal)
-            _schema(
-                result,
-                "result",
-                {
-                    "profile_sha256",
-                    "sequence",
-                    "intent_sha256",
-                    "evidence",
-                    "phase_files",
-                    "phase_chain_sha256",
-                },
-            )
-            state.integer(result["sequence"], 1, MAX_OPERATIONS)
-            require(
-                result["profile_sha256"] == _digest(profile)
-                and result["sequence"] == sequence
-                and result["intent_sha256"] == intent_sha
-                and type(result["evidence"]) is dict,
-                "result",
-            )
-            require(
-                result["phase_chain_sha256"] == phases.sha256
-                and _digest(result["phase_files"]) == phases.sha256
-                and phases.records["terminal.json"]["payload"]["native_outcome"][
-                    "accepted"
-                ]
-                is True,
-                "result-phases",
-            )
-            result_sha = _digest(result)
+            result_sha = _native_result(binding, sequence, intent_sha, phases, result)
         cursor = _head(
             binding,
             sequence,
@@ -518,9 +521,14 @@ def _publish(binding, previous_sha256, value):
     require(
         _digest(_read(directory / "HEAD.json", seal)) == previous_sha256, "predecessor"
     )
-    checksum = _write(directory / "HEAD.next", value)
+    staging = directory / "HEAD.next"
+    if os.path.lexists(staging):
+        staging = directory / _slot(value["sequence"]) / "HEAD.next"
+    checksum = _write(staging, value)
     _close(seal)
-    os.replace(directory / "HEAD.next", directory / "HEAD.json")
+    os.replace(staging, directory / "HEAD.json")
+    if staging.parent != directory:
+        backup.sync_directory(staging.parent)
     backup.sync_directory(directory)
     return checksum
 
@@ -586,6 +594,10 @@ def _current_operation(operation):
 
 def _append_phase(operation, stage, payload):
     """Durably append the next fixed phase and return a freshly sealed token."""
+    require(
+        type(operation) is Pending and operation.kind in {"shutdown", "resume"},
+        "native-operation",
+    )
     require(type(stage) is str and stage in STAGES, "phase")
     require(
         type(payload) is dict and len(state.canonical(payload)) <= LIMIT,
@@ -626,6 +638,10 @@ def _append_phase(operation, stage, payload):
 
 def _complete(operation, evidence):
     """Publish a metadata candidate after caller validation; do not certify native work."""
+    require(
+        type(operation) is Pending and operation.kind in {"shutdown", "resume"},
+        "native-operation",
+    )
     require(type(evidence) is dict, "operation")
     current = _current_operation(operation)
     require(
@@ -702,3 +718,665 @@ def _fail(operation, reason, outcome):
             outcome=outcome,
         ),
     )
+
+
+# Metadata only; the caller supplies independently qualified
+# current/fence proof and holds true pair EX. No resolver invokes a native API.
+BASIS_BYTES_LIMIT = 16777216
+SLOT_FILES = {
+    "intent.json",
+    "dispatch.json",
+    "ack.json",
+    "terminal.json",
+    "result.json",
+    "failure.json",
+    "HEAD.next",
+}
+
+
+@dataclass(frozen=True)
+class ResolutionCandidate:
+    sequence: int
+    head_sha256: str
+    result_sha256: str
+    seal: Seal
+    metadata_resolution_recorded: bool = True
+    native_action_dispatched: bool = False
+
+
+def _read_any(path, seal):
+    """Forensic read: preserve bounded partial/empty private files, not JSON repair."""
+    require(path.resolve(strict=True) == path, "basis-path")
+    before = path.lstat()
+    require(
+        stat.S_ISREG(before.st_mode)
+        and before.st_uid == os.geteuid()
+        and before.st_gid == os.getegid()
+        and stat.S_IMODE(before.st_mode) == 0o600
+        and before.st_nlink == 1
+        and 0 <= before.st_size <= LIMIT,
+        "basis-file",
+    )
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        require(observe.stable(os.fstat(fd)) == observe.stable(before), "basis-changed")
+        raw = bytearray()
+        while chunk := os.read(fd, min(65536, LIMIT + 1 - len(raw))):
+            raw.extend(chunk)
+            require(len(raw) <= LIMIT, "basis-limit")
+        require(
+            len(raw) == before.st_size
+            and observe.stable(os.fstat(fd))
+            == observe.stable(before)
+            == observe.stable(path.lstat()),
+            "basis-changed",
+        )
+    finally:
+        os.close(fd)
+    seal.files[str(path)] = tuple(observe.stable(before))
+    return bytes(raw)
+
+
+def _snapshot(binding):
+    _profile(binding)
+    seal = Seal()
+    _global(seal)
+    directory = RUNTIME_ROOT / binding.pair_key
+    _directory(directory, seal)
+    names = sorted(p.name for p in directory.iterdir())
+    fixed = {"profile.json", "genesis.json", "HEAD.json", "HEAD.next"}
+    slots = [name for name in names if name not in fixed]
+    require(
+        all(type(name) is str and state.matches(r"[0-9]{20}", name) for name in slots),
+        "basis-membership",
+    )
+    require(slots == [_slot(n) for n in range(1, len(slots) + 1)], "basis-sequence")
+    require(
+        {"profile.json", "genesis.json", "HEAD.json"} <= set(names), "basis-membership"
+    )
+    _members(directory, names, seal)
+    files, directories, members, raw_files = (
+        {},
+        {"": list(seal.directories[str(directory)])},
+        {"": names},
+        {},
+    )
+    accumulated_bytes = 0
+    for name in names:
+        path = directory / name
+        if name in slots:
+            _directory(path, seal)
+            directories[name] = list(seal.directories[str(path)])
+            children = sorted(p.name for p in path.iterdir())
+            require(set(children) <= SLOT_FILES, "basis-membership")
+            _members(path, children, seal)
+            members[name] = children
+            paths = [path / child for child in children]
+        else:
+            paths = [path]
+        for file in paths:
+            raw = _read_any(file, seal)
+            accumulated_bytes += len(raw)
+            require(accumulated_bytes <= BASIS_BYTES_LIMIT, "basis-limit")
+            relative = str(file.relative_to(directory))
+            files[relative] = {
+                "sha256": state.sha256(raw),
+                "identity": list(seal.files[str(file)]),
+            }
+            raw_files[relative] = raw
+    require(sum(map(len, raw_files.values())) <= BASIS_BYTES_LIMIT, "basis-limit")
+    profile = observe.decode(raw_files["profile.json"])
+    genesis = observe.decode(raw_files["genesis.json"])
+    head = observe.decode(raw_files["HEAD.json"])
+    require(
+        state.canonical(profile) == raw_files["profile.json"]
+        and _digest(profile) == _digest(_profile(binding)),
+        "authority",
+    )
+    require(
+        state.canonical(genesis) == raw_files["genesis.json"]
+        and _digest(genesis) == _digest(_genesis(binding)),
+        "genesis",
+    )
+    _schema(head, "head", HEAD_FIELDS)
+    require(
+        state.canonical(head) == raw_files["HEAD.json"]
+        and head["profile_sha256"] == _digest(_profile(binding)),
+        "basis-head",
+    )
+    state.integer(head["sequence"], 0, len(slots))
+    require(
+        type(head["state"]) is str and head["state"] in {"ready", "pending"},
+        "basis-head",
+    )
+    state.digest(head["predecessor_sha256"])
+    if head["sequence"] == 0:
+        require(_digest(head) == _digest(_genesis(binding)), "basis-head")
+    else:
+        state.digest(head["intent_sha256"])
+        if head["state"] == "ready":
+            state.digest(head["result_sha256"])
+        else:
+            require(head["result_sha256"] is None, "basis-head")
+    _close(seal)
+    basis = {
+        "maximum_sequence": len(slots),
+        "head": head,
+        "head_sha256": _digest(head),
+        "files": files,
+        "directories": directories,
+        "members": members,
+    }
+    return basis, raw_files, seal
+
+
+def _proof(value):
+    state.keys(value, {"phase", "current_sha256", "worker_fence_sha256"})
+    require(
+        type(value["phase"]) is str and value["phase"] in {"stopped", "os_quiesced"},
+        "resolution-phase",
+    )
+    state.digest(value["current_sha256"])
+    state.digest(value["worker_fence_sha256"])
+
+
+def _prepared_shape(binding, value):
+    _schema(
+        value,
+        "resolution-prepared",
+        {"profile_sha256", "sequence", "anchor", "basis", "proof"},
+    )
+    require(value["profile_sha256"] == _digest(_profile(binding)), "resolution-profile")
+    _proof(value["proof"])
+    state.keys(value["anchor"], {"head", "sha256"})
+    anchor = value["anchor"]
+    state.digest(anchor["sha256"])
+    _schema(anchor["head"], "head", HEAD_FIELDS)
+    require(
+        anchor["head"]["state"] == "ready"
+        and anchor["head"]["profile_sha256"] == value["profile_sha256"]
+        and _digest(anchor["head"]) == anchor["sha256"],
+        "resolution-anchor",
+    )
+    state.integer(anchor["head"]["sequence"], 0, MAX_OPERATIONS)
+    basis = value["basis"]
+    state.keys(
+        basis,
+        {"maximum_sequence", "head", "head_sha256", "files", "directories", "members"},
+    )
+    state.integer(basis["maximum_sequence"], 0, MAX_OPERATIONS - 1)
+    state.integer(value["sequence"], 1, MAX_OPERATIONS)
+    require(
+        value["sequence"] == basis["maximum_sequence"] + 1
+        and anchor["head"]["sequence"] < value["sequence"]
+        and _digest(basis["head"]) == basis["head_sha256"],
+        "resolution-sequence",
+    )
+    _schema(basis["head"], "head", HEAD_FIELDS)
+    require(
+        basis["head"]["profile_sha256"] == value["profile_sha256"], "resolution-profile"
+    )
+    require(
+        type(basis["files"]) is dict
+        and type(basis["directories"]) is dict
+        and type(basis["members"]) is dict,
+        "resolution-basis",
+    )
+
+
+def _check_basis(saved, current):
+    """Immutable prefix only; HEAD is captured history after publication moves it."""
+    maximum = saved["maximum_sequence"]
+    require(maximum <= current["maximum_sequence"], "basis-prefix")
+    expected_dirs = {"", *(_slot(n) for n in range(1, maximum + 1))}
+    require(
+        set(saved["directories"]) == set(saved["members"]) == expected_dirs,
+        "basis-membership",
+    )
+    for name in expected_dirs:
+        require(
+            saved["directories"][name] == current["directories"][name],
+            "basis-directory",
+        )
+        if name:
+            require(
+                saved["members"][name] == current["members"][name], "basis-membership"
+            )
+    root_names = saved["members"][""]
+    require(
+        type(root_names) is list
+        and root_names == sorted(set(root_names))
+        and set(root_names)
+        == {
+            "profile.json",
+            "genesis.json",
+            "HEAD.json",
+            *(_slot(n) for n in range(1, maximum + 1)),
+            *({"HEAD.next"} if "HEAD.next" in saved["files"] else set()),
+        },
+        "basis-membership",
+    )
+    expected_files = {
+        name for name in root_names if not state.matches(r"[0-9]{20}", name)
+    }
+    for name in expected_dirs - {""}:
+        require(set(saved["members"][name]) <= SLOT_FILES, "basis-membership")
+        expected_files.update(name + "/" + child for child in saved["members"][name])
+    require(set(saved["files"]) == expected_files, "basis-membership")
+    for name, descriptor in saved["files"].items():
+        if name == "HEAD.json":
+            require(descriptor["sha256"] == saved["head_sha256"], "basis-head")
+            continue
+        require(
+            name in current["files"]
+            and _digest(descriptor) == _digest(current["files"][name]),
+            "basis-file-changed",
+        )
+
+
+def _resolution_intent(binding, intent):
+    _schema(
+        intent,
+        "resolution-intent",
+        {
+            "profile_sha256",
+            "sequence",
+            "predecessor_sha256",
+            "kind",
+            "prepared_sha256",
+            "resolution",
+        },
+    )
+    value = intent["resolution"]
+    _prepared_shape(binding, value)
+    require(
+        intent["kind"] == "resolve"
+        and intent["profile_sha256"] == value["profile_sha256"]
+        and type(intent["sequence"]) is int
+        and intent["sequence"] == value["sequence"]
+        and intent["prepared_sha256"] == _digest(value)
+        and intent["predecessor_sha256"] == value["basis"]["head_sha256"],
+        "resolution-intent",
+    )
+    return value
+
+
+def _derive(binding, sequence, phase, basis, raws):
+    """Iterative predecessor derivation; blocked slots are sealed, never rewritten."""
+    memo = {(0, "ready"): (_genesis(binding), set())}
+    todo = [(sequence, phase)]
+    headers = {}
+    while todo:
+        n, status = todo[-1]
+        if (n, status) in memo:
+            todo.pop()
+            continue
+        require(n > 0, "head-chain")
+        if n not in headers:
+            key = _slot(n) + "/intent.json"
+            require(key in raws, "head-chain")
+            intent = observe.decode(raws[key])
+            require(state.canonical(intent) == raws[key], "canonical")
+            resolution = intent.get("kind") == "resolve"
+            value = _resolution_intent(binding, intent) if resolution else None
+            if not resolution:
+                _validate_intent(binding, intent)
+            require(intent["sequence"] == n, "intent")
+            dependency = value["anchor"]["head"]["sequence"] if resolution else n - 1
+            require(0 <= dependency < n, "head-chain")
+            headers[n] = intent, value, dependency
+        intent, value, dependency = headers[n]
+        if (dependency, "ready") not in memo:
+            todo.append((dependency, "ready"))
+            continue
+        prior, inherited = memo[(dependency, "ready")]
+        names = set(basis["members"][_slot(n)])
+        prefix = _slot(n) + "/"
+        coverage = set(inherited)
+        if value is not None:
+            require(_digest(prior) == value["anchor"]["sha256"], "resolution-anchor")
+            _check_basis(value["basis"], basis)
+            coverage.update(value["basis"]["files"])
+            expected_names = {"intent.json"} | (
+                {"result.json"} if status == "ready" else set()
+            )
+            require(names == expected_names, "resolution-membership")
+            result_sha = None
+            if status == "ready":
+                result = observe.decode(raws[prefix + "result.json"])
+                require(
+                    state.canonical(result) == raws[prefix + "result.json"], "canonical"
+                )
+                _schema(
+                    result,
+                    "resolution-result",
+                    {
+                        "profile_sha256",
+                        "sequence",
+                        "intent_sha256",
+                        "basis_sha256",
+                        "anchor_sha256",
+                        "proof",
+                        "metadata_resolution_recorded",
+                        "native_action_dispatched",
+                    },
+                )
+                expected = _resolution_result(intent)
+                require(_digest(result) == _digest(expected), "resolution-result")
+                result_sha = _digest(result)
+            head = _head(
+                binding,
+                n,
+                status,
+                intent["predecessor_sha256"],
+                _digest(intent),
+                result_sha,
+            )
+        else:
+            require(intent["predecessor_sha256"] == _digest(prior), "predecessor")
+            phase_names = names - {"intent.json", "result.json"}
+            ordered = _prefix(phase_names)
+            require(
+                status == "pending" or len(ordered) == len(STAGES), "phases-incomplete"
+            )
+            require(
+                names
+                == {
+                    "intent.json",
+                    *ordered,
+                    *({"result.json"} if status == "ready" else set()),
+                },
+                "membership",
+            )
+            descriptors = {
+                name: {
+                    "path": str(RUNTIME_ROOT / binding.pair_key / prefix / name),
+                    **basis["files"][prefix + name],
+                }
+                for name in ordered
+            }
+            phases = validate_phase_capture(
+                binding,
+                intent,
+                {name: raws[prefix + name] for name in ordered},
+                descriptors,
+            )
+            result_sha = None
+            if status == "ready":
+                result = observe.decode(raws[prefix + "result.json"])
+                require(
+                    state.canonical(result) == raws[prefix + "result.json"], "canonical"
+                )
+                result_sha = _native_result(binding, n, _digest(intent), phases, result)
+            head = _head(
+                binding, n, status, _digest(prior), _digest(intent), result_sha
+            )
+        memo[(n, status)] = head, coverage
+        todo.pop()
+    return memo[(sequence, phase)]
+
+
+def _inspect_resolved(binding, expected_head_sha256):
+    state.digest(expected_head_sha256)
+    basis, raws, seal = _snapshot(binding)
+    head = basis["head"]
+    require(
+        _digest(head) == expected_head_sha256
+        and head["sequence"] == basis["maximum_sequence"],
+        "head",
+    )
+    derived, coverage = _derive(binding, head["sequence"], head["state"], basis, raws)
+    require(_digest(derived) == expected_head_sha256, "head-chain")
+    require("HEAD.next" not in basis["files"] or "HEAD.next" in coverage, "orphan-head")
+    if head["sequence"]:
+        prefix = _slot(head["sequence"]) + "/"
+        intent = observe.decode(raws[prefix + "intent.json"])
+        if intent["kind"] == "resolve":
+            phases = PhaseChain({}, {}, _digest({}))
+        else:
+            names = _prefix(
+                set(basis["members"][_slot(head["sequence"])])
+                - {"intent.json", "result.json"}
+            )
+            descriptors = {
+                name: {
+                    "path": str(RUNTIME_ROOT / binding.pair_key / prefix / name),
+                    **basis["files"][prefix + name],
+                }
+                for name in names
+            }
+            phases = validate_phase_capture(
+                binding,
+                intent,
+                {name: raws[prefix + name] for name in names},
+                descriptors,
+            )
+    else:
+        intent, phases = None, PhaseChain({}, {}, _digest({}))
+    _close(seal)
+    return View(head, expected_head_sha256, seal, intent, phases)
+
+
+def _anchor(binding, raw, trusted, basis, raws):
+    state.digest(trusted)
+    require(
+        type(raw) is bytes and 0 < len(raw) <= LIMIT and state.sha256(raw) == trusted,
+        "anchor",
+    )
+    head = observe.decode(raw)
+    require(state.canonical(head) == raw, "anchor")
+    _schema(head, "head", HEAD_FIELDS)
+    require(head["state"] == "ready", "anchor")
+    state.integer(head["sequence"], 0, basis["maximum_sequence"])
+    derived, _ = _derive(binding, head["sequence"], "ready", basis, raws)
+    require(_digest(derived) == trusted, "anchor")
+    return {"head": head, "sha256": trusted}
+
+
+def _anchor_ratchet(binding, anchor, basis, raws):
+    """Only a durable admitted predecessor ratchets acceptance; old bytes stay sealed."""
+    minimum = 0
+    for n in range(1, basis["maximum_sequence"] + 1):
+        raw = raws.get(_slot(n) + "/intent.json")
+        if raw is None:
+            continue
+        try:
+            intent = observe.decode(raw)
+            if type(intent) is not dict:
+                continue
+            if intent.get("kind") == "resolve":
+                value = _resolution_intent(binding, intent)
+            else:
+                _validate_intent(binding, intent)
+                previous, _ = _derive(binding, n - 1, "ready", basis, raws)
+                if intent["predecessor_sha256"] == _digest(previous):
+                    minimum = max(minimum, n - 1)
+                continue
+        except (ValueError, KeyError, OSError):
+            continue
+        # A valid previous resolution intent already bound this immutable
+        # prefix, even if its own publication/return subsequently failed.
+        _check_basis(value["basis"], basis)
+        minimum = max(minimum, value["anchor"]["head"]["sequence"])
+    require(anchor["head"]["sequence"] >= minimum, "anchor-stale")
+
+
+def capture_basis(binding):
+    """Read-only forensic capture; its digest needs external controller acceptance."""
+    basis, _, seal = _snapshot(binding)
+    _close(seal)
+    return observe.decode(state.canonical(basis))
+
+
+def prepare_resolution(
+    binding, anchor_raw, anchor_sha256, expected_basis_sha256, proof
+):
+    """Read-only. Caller vouches for latest accepted anchor/current/fence proof."""
+    _profile(binding)
+    _proof(proof)
+    state.digest(expected_basis_sha256)
+    basis, raws, seal = _snapshot(binding)
+    require(_digest(basis) == expected_basis_sha256, "basis-changed")
+    anchor = _anchor(binding, anchor_raw, anchor_sha256, basis, raws)
+    _anchor_ratchet(binding, anchor, basis, raws)
+    require(
+        basis["head_sha256"] != anchor_sha256
+        or basis["maximum_sequence"] > anchor["head"]["sequence"],
+        "resolution-not-needed",
+    )
+    prepared = _document(
+        "resolution-prepared",
+        profile_sha256=_digest(_profile(binding)),
+        sequence=basis["maximum_sequence"] + 1,
+        anchor=anchor,
+        basis=basis,
+        proof=observe.decode(state.canonical(proof)),
+    )
+    _prepared_shape(binding, prepared)
+    require(len(state.canonical(prepared)) <= LIMIT, "resolution-limit")
+    _close(seal)
+    return prepared
+
+
+def _publish_resolution(binding, previous_sha256, value):
+    directory = RUNTIME_ROOT / binding.pair_key
+    seal = Seal()
+    _directory(directory, seal)
+    require(
+        _digest(_read(directory / "HEAD.json", seal)) == previous_sha256, "predecessor"
+    )
+    staging = directory / _slot(value["sequence"]) / "HEAD.next"
+    checksum = _write(staging, value)
+    _close(seal)
+    os.replace(staging, directory / "HEAD.json")
+    if staging.parent != directory:
+        backup.sync_directory(staging.parent)
+    backup.sync_directory(directory)
+    return checksum
+
+
+def begin_resolution(binding, raw, trusted):
+    state.digest(trusted)
+    require(
+        type(raw) is bytes and 0 < len(raw) <= LIMIT and state.sha256(raw) == trusted,
+        "resolution-prepared",
+    )
+    prepared = observe.decode(raw)
+    require(state.canonical(prepared) == raw, "canonical")
+    _prepared_shape(binding, prepared)
+    fresh = prepare_resolution(
+        binding,
+        state.canonical(prepared["anchor"]["head"]),
+        prepared["anchor"]["sha256"],
+        _digest(prepared["basis"]),
+        prepared["proof"],
+    )
+    require(_digest(fresh) == trusted, "resolution-basis-changed")
+    directory = RUNTIME_ROOT / binding.pair_key
+    slot = directory / _slot(prepared["sequence"])
+    slot.mkdir(mode=0o700)
+    backup.sync_directory(directory)
+    intent = _document(
+        "resolution-intent",
+        profile_sha256=prepared["profile_sha256"],
+        sequence=prepared["sequence"],
+        predecessor_sha256=prepared["basis"]["head_sha256"],
+        kind="resolve",
+        prepared_sha256=trusted,
+        resolution=prepared,
+    )
+    intent_sha = _write(slot / "intent.json", intent)
+    head_sha = _publish_resolution(
+        binding,
+        prepared["basis"]["head_sha256"],
+        _head(
+            binding,
+            prepared["sequence"],
+            "pending",
+            prepared["basis"]["head_sha256"],
+            intent_sha,
+        ),
+    )
+    view = _inspect(binding, head_sha)
+    return Pending(
+        binding,
+        prepared["sequence"],
+        "resolve",
+        trusted,
+        prepared["basis"]["head_sha256"],
+        intent_sha,
+        head_sha,
+        view.seal,
+        view.phases,
+    )
+
+
+def _resolution_result(intent):
+    prepared = intent["resolution"]
+    return _document(
+        "resolution-result",
+        profile_sha256=intent["profile_sha256"],
+        sequence=intent["sequence"],
+        intent_sha256=_digest(intent),
+        basis_sha256=_digest(prepared["basis"]),
+        anchor_sha256=prepared["anchor"]["sha256"],
+        proof=prepared["proof"],
+        metadata_resolution_recorded=True,
+        native_action_dispatched=False,
+    )
+
+
+def complete_resolution(operation):
+    require(
+        type(operation) is Pending and operation.kind == "resolve",
+        "resolution-operation",
+    )
+    current = _current_operation(operation)
+    result = _resolution_result(current.intent)
+    slot = RUNTIME_ROOT / operation.binding.pair_key / _slot(operation.sequence)
+    result_sha = _write(slot / "result.json", result)
+    head_sha = _publish_resolution(
+        operation.binding,
+        operation.pending_head_sha256,
+        _head(
+            operation.binding,
+            operation.sequence,
+            "ready",
+            operation.predecessor_sha256,
+            operation.intent_sha256,
+            result_sha,
+        ),
+    )
+    view = _inspect(operation.binding, head_sha)
+    return ResolutionCandidate(operation.sequence, head_sha, result_sha, view.seal)
+
+
+def _has_resolution(binding):
+    _profile(binding)
+    seal = Seal()
+    _global(seal)
+    directory = RUNTIME_ROOT / binding.pair_key
+    _directory(directory, seal)
+    found = False
+    for slot in directory.iterdir():
+        if not state.matches(r"[0-9]{20}", slot.name):
+            continue
+        intent = slot / "intent.json"
+        if not os.path.lexists(intent):
+            continue
+        try:
+            value = observe.decode(_read_any(intent, seal))
+            if type(value) is dict and value.get("kind") == "resolve":
+                found = True
+        except (ValueError, OSError):
+            # The normal validator still rejects it; resolution preparation
+            # separately captures such partial bytes without adopting them.
+            pass
+    _close(seal)
+    return found
+
+
+def _inspect(binding, expected_head_sha256):
+    if not _has_resolution(binding):
+        return _native_inspect(binding, expected_head_sha256)
+    return _inspect_resolved(binding, expected_head_sha256)
