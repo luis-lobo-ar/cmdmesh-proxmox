@@ -1519,8 +1519,9 @@ The namespace uses the retained dataset-pair key. `Binding` also requires the
 hash of the fully validated owner checkpoint and the exact `GuestBinding`.
 The checkpoint binds the owner, generation, guest and retained resources.
 A new nonce or manager boot cannot select a different operation history for
-that pair. Journal schema 2 pins the `owner-os-action-v1` profile. Schema 1
-metadata refuses without an automatic upgrade or reset.
+that pair. Journal schema 3 pins the `owner-os-action-v2` profile, including
+explicit metadata resolution. Schema 1 and 2 metadata refuse without an
+automatic upgrade or reset.
 
 The caller must hold the real pair-exclusive lease throughout each operation.
 Constructing a `Binding`, `Pending` or `Candidate` does not acquire that lease or
@@ -1563,17 +1564,17 @@ does not establish success. The separate caller-supplied completion evidence
 remains opaque to this component. The native workflow must validate current
 ownership, runtime, application state, and native postconditions.
 
-Pending operations, orphan slots, unexpected files, stale heads, changed file
-identities and permissive metadata refuse further operations. There is no
-automatic cleanup, reset or adoption. A failure after candidate publication
-retains the candidate and its failure barrier. An unresolved operation needs a
-separately qualified reconciliation procedure.
+Ordinary native operations refuse pending attempts, orphan slots, unexpected
+files, stale heads, changed file identities, and permissive metadata. There is
+no automatic cleanup, reset, or adoption. A failure after candidate publication
+retains the candidate and its failure barrier. The explicit metadata-resolution
+variant below has a separate admission contract.
 
 Files require mode `0600`, one link and the executing identity. Captured native
 phase descriptors require root ownership. Directories
 require mode `0700`. The component checks canonical content, strict schemas,
 exact membership and file identities, then repeats the filesystem closure
-before returning. Each chain permits at most 4,096 operations.
+before returning. Each chain permits at most 4,096 slots, including resolutions.
 
 Synthetic filesystem tests cover repeated clean cycles, real lock handoff,
 pending requests, stale predecessors, phase ordering, partial writes, valid
@@ -1582,6 +1583,46 @@ tests cover raw hashes, metadata, and incomplete prefixes. Run the journal tests
 with `python -m unittest discover -s tests -p 'test_persistence_owner_journal*.py' -v`.
 These tests qualify metadata ordering only. Native lifecycle integration,
 manager reboot, and source-unavailable restore remain unqualified.
+
+### Metadata-only owner resolution (developing)
+
+The journal can record a new metadata baseline after an interrupted native or
+metadata attempt. This internal component performs no native action. The
+caller must independently qualify current application state and native-worker
+fencing under the real pair-exclusive lease. A proof hash or journal token
+does not establish that qualification.
+
+| Internal function | Behavior |
+| --- | --- |
+| `capture_basis(binding)` | Reads the exact current head, slot membership, raw file hashes, and file identities. It writes nothing. |
+| `prepare_resolution(binding, anchor_raw, anchor_sha256, expected_basis_sha256, proof)` | Requires the latest externally accepted ready anchor and the exact externally accepted blocked-basis hash. Returns a bound preparation without writes. |
+| `begin_resolution(binding, raw, trusted)` | Rechecks the preparation and appends a distinct resolution intent in the next slot. It preserves old records and publishes a pending resolution head. |
+| `complete_resolution(pending)` | Records the metadata result and returns a candidate ready head. The caller must accept the verified return before using that head. |
+
+The proof contains the actual observed phase plus separately qualified current
+and worker-fence hashes. This filesystem component checks their shape and
+binding. It does not collect or validate native-worker safety. That observer,
+the Ansible boundary, and native resolution trials remain unqualified.
+
+A stopped API, inactive units, an empty cgroup, elapsed time, or reacquired
+target shared lock cannot exclude a delayed native worker queued behind that
+lock. An unknown request requires genuine worker safety evidence or an
+independently admitted manager-epoch fence before resolution.
+
+Resolution preserves original intent, phases, results, failures, and orphaned
+staging bytes. It never invents an ACK, fills an old missing phase, changes a
+native outcome, or adopts a found target HEAD. Its result reports
+`metadata_resolution_recorded: true` and `native_action_dispatched: false`.
+A later resolution can bind an interrupted resolution too. A stale anchor or
+changed immutable prefix refuses before a new slot is created.
+
+Forensic capture allows bounded empty or partial private files in known slot
+positions. It retains their exact hashes and metadata without repairing their
+contents. Each file is at most 4 MiB. The cumulative 16 MiB capture bound acts
+during reading, and a resolution preparation is at most 4 MiB. Foreign files,
+symlinks, unsafe ownership, and permissive modes refuse. Cross-directory head
+publication syncs both affected directories. Ordinary and resolution-aware
+history use the same native-result validator and require canonical result bytes.
 
 ### Same-owner OS transitions (developing)
 
