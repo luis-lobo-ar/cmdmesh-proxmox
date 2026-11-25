@@ -188,6 +188,12 @@ records, preserving the full historical evidence. It makes no current observatio
 and grants no permission to stop, start or reboot a guest. A later lifecycle must
 admit the current host epoch, ownership, guest backing and application state.
 
+The internal [owner lifecycle journal](docs/persistence-profile.md#ordered-owner-journal-developing)
+orders shutdown and resume requests under one retained dataset pair. It rejects
+stale predecessors and preserves incomplete attempts across controller restarts.
+This component writes metadata only. Native shutdown/resume integration and its
+infrastructure qualification remain in development.
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,
