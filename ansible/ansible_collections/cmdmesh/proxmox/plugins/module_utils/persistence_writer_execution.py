@@ -388,6 +388,34 @@ def _journal_contract(
         value, raw = backup.read_private(directory / name)
         require(raw == state.canonical(value), "journal-canonical")
         records[name] = value
+    validate_records(
+        prepared,
+        trusted,
+        records,
+        {
+            "before": before,
+            "after": after,
+            "append_result": appended,
+            "runtime": observed,
+            "peer": peer,
+        },
+    )
+
+
+def validate_records(prepared, trusted, records, result):
+    """Validate decoded journal content without reading files or native state.
+
+    Controllers must separately bind canonical raw bytes, metadata, preparation
+    and the completion hash returned by a successful run. This function alone
+    does not certify freshness, peer admission or successful execution.
+    """
+    state.keys(records, NAMES)
+    before, after = result["before"], result["after"]
+    appended, observed, peer = (
+        result["append_result"],
+        result["runtime"],
+        result["peer"],
+    )
     same(
         records["intent.json"],
         {

@@ -1315,3 +1315,11 @@ Results omit credentials and row values. `application_write_verified` and
 Unknown failures clear verified flags at the Ansible boundary, suppress private
 exception text and retain possible effects for an allowed run. Independent
 source-unavailable restore and native application qualification remain separate.
+
+Controllers that capture the raw journal can reuse
+`persistence_writer_execution.validate_records(prepared, trusted_sha256,
+records, result)`. It checks decoded journal content using the same contract as
+run and status, without filesystem or native access. Callers must separately
+verify canonical raw bytes, exact membership, metadata, preparation and the
+completion hash returned by a successful run. This content check does not prove
+freshness or turn a candidate completion from a failed run into success.

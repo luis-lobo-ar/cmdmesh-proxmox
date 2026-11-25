@@ -213,6 +213,27 @@ class WriterExecutionTests(unittest.TestCase):
         self.assertEqual(status["completion_sha256"], result["completion_sha256"])
         self.fixture.released()
 
+    def test_exported_records_validate_without_filesystem_or_native_access(self):
+        result = self.run_trial()
+        directory = execution.trial.claim_path(self.request)
+        records = {
+            name: json.loads((directory / name).read_bytes())
+            for name in execution.NAMES
+        }
+        with mock.patch.object(
+            execution.backup, "read_private", side_effect=AssertionError("not pure")
+        ), mock.patch.object(
+            execution.runtime.observe, "native", side_effect=AssertionError("native")
+        ):
+            execution.validate_records(self.prepared, self.sha, records, result)
+            for name in execution.NAMES:
+                changed = copy.deepcopy(records)
+                changed[name] = {}
+                with self.subTest(name=name), self.assertRaises((ValueError, KeyError)):
+                    execution.validate_records(self.prepared, self.sha, changed, result)
+            with self.assertRaises(ValueError):
+                execution.validate_records(self.prepared, self.sha, {}, result)
+
     def test_unknown_start_is_contained_once_without_write_or_success(self):
         self.fault = "lost-start"
         with self.assertRaises(TimeoutError):
