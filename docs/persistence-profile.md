@@ -1371,3 +1371,49 @@ The owned native application trial qualified the preceding writer sequence.
 This decoder has synthetic and accepted-receipt component tests. Reusable OS
 shutdown/resume, manager reboot and source-unavailable restore remain separate
 qualification work.
+
+### Ordered owner journal (developing)
+
+`persistence_owner_journal` is an internal filesystem component for workflow
+implementers. It stores an ordered operation chain under the fixed manager path
+`/var/lib/cmdmesh/owner-lifecycle`. It exposes no Ansible action or native
+shutdown/resume command.
+
+The namespace uses the retained dataset-pair key. `Binding` also requires the
+hash of the fully validated owner checkpoint. The checkpoint binds the owner,
+generation, guest and retained resources. A new nonce or manager boot cannot
+select a different operation history for that pair.
+
+The caller must hold the real pair-exclusive lease throughout each operation.
+Constructing a `Binding`, `Pending` or `Candidate` does not acquire that lease or
+admit a native action. Before dispatch, the caller must separately validate
+current ownership, runtime, guest backing and application state.
+
+| Internal helper | Behavior |
+| --- | --- |
+| `_initialize(binding)` | Creates private profile, genesis and head records. Repeating an exact unused initialization makes no changes. Used, partial or foreign state refuses. |
+| `_inspect(binding, expected_head_sha256)` | Reads and validates the complete chain against an externally trusted head. It creates no directories or records. |
+| `_begin(binding, predecessor, kind, prepared_sha256)` | Records and syncs one shutdown or resume intent, then publishes a pending head before returning. |
+| `_complete(pending, evidence)` | Records caller-validated evidence and returns a candidate successor after closing the filesystem checks. |
+| `_fail(pending, reason, outcome)` | Attempts to retain an immutable failure record. It does not reset, rewind or remove an attempt. |
+
+The controller must accept the fully verified return before using a candidate
+as successor authority. A head found on disk after a failed or unknown return
+does not establish success. Completion evidence is opaque to this component.
+The native workflow remains responsible for validating that evidence.
+
+Pending operations, orphan slots, unexpected files, stale heads, changed file
+identities and permissive metadata refuse further operations. There is no
+automatic cleanup, reset or adoption. A failure after candidate publication
+retains the candidate and its failure barrier. An unresolved operation needs a
+separately qualified reconciliation procedure.
+
+Files require mode `0600`, one link and the executing identity. Directories
+require mode `0700`. The component checks canonical content, strict schemas,
+exact membership and file identities, then repeats the filesystem closure
+before returning. Each chain permits at most 4,096 operations.
+
+Eighteen synthetic filesystem tests cover repeated clean cycles, real lock
+handoff, pending requests, stale predecessors, partial writes and late metadata
+changes. These tests qualify metadata ordering only. Native lifecycle
+integration, manager reboot and source-unavailable restore remain unqualified.
