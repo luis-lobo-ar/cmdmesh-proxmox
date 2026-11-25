@@ -753,6 +753,15 @@ def ordered_pending(rows):
 
 
 def verify_target(request, prepared):
+    return observe_target(request, validate_target_config)
+
+
+def observe_target(request, validate_configuration):
+    """Observe the actual stopped root through an explicit phase validator.
+
+    Callers must validate the real configuration, including any admitted binds
+    and temporary protection state. The original blank-only wrapper is strict.
+    """
     node, vmid = request["source_request"]["source"]["selector"]["node"], str(
         request["target"]["vmid"]
     )
@@ -765,7 +774,7 @@ def verify_target(request, prepared):
         "target-not-stopped",
     )
     config = get(path + "/config")
-    volume = validate_target_config(request, config)
+    volume = validate_configuration(request, config)
     pending = ordered_pending(get(path + "/pending"))
     rootfs = Path(observe.native(["/usr/sbin/pvesm", "path", volume]).decode().strip())
     require(
