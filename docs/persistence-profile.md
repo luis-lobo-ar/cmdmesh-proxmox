@@ -1005,3 +1005,25 @@ failure marker. No automatic rollback is attempted. The verified result covers
 metadata only; boot, rebuild and restore remain false. Native reconciliation is
 not yet qualified. The initial bootstrap's legacy guard behavior remains unchanged
 here; fresh defaults require their own corrected-guard qualification before release.
+
+## Current-guest lifecycle transport (developing)
+
+`persistence_guest_api.GuestBinding` binds one current LXC to its node, numeric
+guest ID, machine fingerprint, CA fingerprint, and leaf fingerprint. A lifecycle
+controller can construct this binding directly from an admitted source. It does
+not need a historical source-to-recipient request.
+
+`post_guest_action(binding, action)` accepts only `start` and graceful `shutdown`.
+It checks the local root identity, node, and machine before authentication. It
+uses the existing verified TLS transport to the fixed local PVE endpoint. Shutdown
+has a fixed timeout and disables forced stopping. No caller supplies an endpoint,
+extra parameters, or a retry policy. Task parsing binds the operation, node,
+guest ID, and native process identity. Task inspection retains the qualified
+systemd255 warning outcome and refuses unknown warnings or incomplete logs.
+
+The original recipient API delegates to this shared transport after its existing
+admission checks. Its private create path accepts only the fixed stopped,
+isolated recipient parameters. This extraction does not add a lifecycle command
+to the CLI or MCP interface. Controllers still own durable dispatch claims,
+configuration lock handoff, runtime checks, and uncertainty after a lost reply.
+Transport tests establish neither native start nor application recovery.

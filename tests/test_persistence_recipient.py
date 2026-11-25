@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ansible"))
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_recipient as recipient,
+    persistence_guest_api as guest_api,
     persistence_state as state,
 )
 from test_persistence_state import manifest
@@ -706,13 +707,13 @@ class CreateWireTests(unittest.TestCase):
         with mock.patch.object(
             recipient.observe, "read_regular", return_value=(raw, None)
         ), mock.patch.object(
-            recipient.subprocess,
+            guest_api.subprocess,
             "run",
             return_value=SimpleNamespace(
                 returncode=0, stdout=json.dumps(credentials).encode(), stderr=b""
             ),
         ) as auth, mock.patch.object(
-            recipient.socket, "create_connection", side_effect=redirected
+            guest_api.socket, "create_connection", side_effect=redirected
         ):
             result = (
                 REAL_POST(request)
@@ -784,8 +785,8 @@ class CreateWireTests(unittest.TestCase):
             self.assertNotIn("PRIVATE", json.dumps(result))
 
     def test_unknown_guest_operations_refuse_before_authentication_or_socket(self):
-        with mock.patch.object(recipient.subprocess, "run") as auth, mock.patch.object(
-            recipient.socket, "create_connection"
+        with mock.patch.object(guest_api.subprocess, "run") as auth, mock.patch.object(
+            guest_api.socket, "create_connection"
         ) as connect:
             for operation in ("create", "stop", "reboot", "destroy", "../start", None):
                 with self.assertRaises(state.PersistenceError):
