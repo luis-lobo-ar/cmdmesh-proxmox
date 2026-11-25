@@ -196,6 +196,12 @@ task records. Completion binds their raw hashes and file identities.
 This component writes metadata only. Native shutdown/resume integration and its
 infrastructure qualification remain in development.
 
+The internal [owner OS transition SDK](docs/persistence-profile.md#same-owner-os-transitions-developing)
+combines current admission with ordered metadata and one native request.
+Preparation and status are read-only. It preserves interrupted attempts and
+requires separately accepted successor hashes. It has no public Ansible action
+or managed shutdown/restart qualification yet.
+
 Internal lifecycle workers can inspect a stopped owner under locks they already
 hold. The [stopped worker contract](docs/persistence-profile.md#caller-leased-stopped-inspection-developing)
 keeps the running-guest rejection before retained data reads. Public observation
