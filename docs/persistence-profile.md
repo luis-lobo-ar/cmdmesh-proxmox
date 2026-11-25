@@ -873,6 +873,27 @@ handoff, a tombstone protocol or a source-unavailable restore. It requires the
 retired guest to remain present. A separate phase-aware live observer and startup
 workflow must qualify OS/application writes before any denial is removed.
 
+## Explicit kernel evidence (developing)
+
+`persistence_kernel.KernelBinding` names the host, guest, exact root image,
+filesystem UUID, stable generated configuration and permitted CPUs. Its immutable
+values describe the current reference profile: local 2 GiB ext4 image, 512 MiB
+memory, no swap, one CPU, and the unprivileged UID/GID mapping. Other resource or
+storage profiles are unsupported.
+
+`collect(binding)` checks the host before and after the existing read-only kernel
+reader. `validate(binding, evidence)` checks process birth and namespaces, actual
+root-loop backing, image identity, mappings, cgroups, AppArmor and generated
+configuration. Image mtime/ctime are excluded because the OS can write its root;
+device, inode, type, ownership, link count and image size remain bound.
+
+The adapter passes a minimal field projection to shared kernel primitives. It
+does not construct or validate a blank-container policy. It executes no guest
+command, reads no application data and creates no file. The outer operation must
+admit ownership, hold native configuration leases, and verify guest bind mounts
+and application state. Kernel evidence alone does not establish those facts or
+qualify boot, rebuild or recovery. Native retained-runtime qualification is pending.
+
 ## Known failed-guard reconciliation (developing)
 
 The `persistence_owner_reconcile` library admits one specific forward
