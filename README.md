@@ -174,11 +174,19 @@ authenticates a retained-credential read through a verified local socket peer,
 without application EX or host-side database reads. Both phases hold pair/native
 leases and check guest backing, image, owner and references. Neither phase starts
 or enables the service, appends a record, or claims rebuild or restore. The
-claimed native write/read-back/stop/SQL sequence remains pending. The developing
+claimed native write/read-back/stop/SQL sequence has passed an owned disposable
+infrastructure trial, including original data and credential preservation. The developing
 [`lxc_persistence_writer_trial` boundary](docs/persistence-profile.md#claimed-application-lifecycle-developing)
 prepares and controls that once-only test with explicit mutation permission,
 failure containment and separately trusted read-only status. Local qualification
-does not establish native rebuild or disaster-recovery acceptance.
+does not establish disaster-recovery or reusable OS restart acceptance.
+
+Workflow authors can decode an accepted writer receipt with the pure
+[`load_writer_checkpoint` helper](docs/persistence-profile.md#accepted-writer-checkpoint-developing).
+It binds externally trusted preparation/completion hashes and all 13 raw journal
+records, preserving the full historical evidence. It makes no current observation
+and grants no permission to stop, start or reboot a guest. A later lifecycle must
+admit the current host epoch, ownership, guest backing and application state.
 
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
