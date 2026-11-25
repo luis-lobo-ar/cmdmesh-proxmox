@@ -199,6 +199,12 @@ hold. The [stopped worker contract](docs/persistence-profile.md#caller-leased-st
 keeps the running-guest rejection before retained data reads. Public observation
 continues to acquire its own locks.
 
+The developing [current owner admission API](docs/persistence-profile.md#current-owner-admission-developing)
+checks fresh stopped or running evidence against an accepted application
+checkpoint. It preserves the exact application data, owner and credentials
+while admitting supported runtime changes. It performs no guest lifecycle
+action and does not advance an operation journal.
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,
