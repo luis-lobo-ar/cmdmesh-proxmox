@@ -1246,8 +1246,72 @@ parent relationship, required history membership, profile, completed-start hash,
 original application tuple and uptime floor. A matching self-hash alone does not
 authorize an action or establish current runtime state.
 
-The claimed start, one append, read-back, containment stop and new stopped SQL
-checkpoint are not implemented by this preparation component. Neither preparation
-nor a successful active read qualifies application rebuild or independent restore.
-After an intentional append, later status must use its own new application
-checkpoint rather than the original OS status bound to the old record tuple.
+Preparation does not perform the claimed lifecycle described below. Neither
+preparation nor a successful active read qualifies application rebuild or
+independent restore. After an intentional append, later status uses its new
+application checkpoint rather than the original OS status bound to the old tuple.
+
+## Claimed application lifecycle (developing)
+
+`lxc_persistence_writer_trial` exposes `prepare`, `run` and `status` for the fixed
+reference application. The SDK execution functions are
+`persistence_writer_execution.preflight(raw, trusted_sha256)`, `run(raw,
+trusted_sha256)` and `status(raw, trusted_sha256, completion_sha256)`.
+See `ansible-doc cmdmesh.proxmox.lxc_persistence_writer_trial` for arguments.
+These are component-qualified interfaces. A native trial remains required.
+
+An actual run requires `allow_changes: true`. Check mode performs the same fresh
+read-only preflight, compares exact canonical preparation bytes and reports a
+proposed change. It creates no runtime directory or claim and sends no start,
+application request or stop. A consumed claim refuses another run or preflight.
+Use read-only status with the trusted successful receipt instead of replaying it.
+
+The allowed lifecycle performs these steps:
+
+1. Take the pair EX and both native SH leases. Recheck the original quiesced SQL
+   tuple under the real application EX and create a permanent GUID-pair claim.
+2. Close application EX, then journal and attempt one fixed service start. The
+   service remains disabled for automatic startup. Missing-socket readiness can
+   repeat read-only admission within a bounded deadline. It never repeats start
+   or retries an application request.
+3. Authenticate with the original credential and require the exact prior record
+   hash/count. The declared nonce must be absent. Journal one append dispatch and
+   require `committed` with the previous maximum sequence plus one. `unchanged`
+   does not qualify this first attempt.
+4. Read back exactly the old rows plus the declared nonce and fixed marker.
+   Close the active session. Freshly admit the owned service's root, program,
+   current MainPID and birth before one separately journaled stop.
+5. After stop, admit host/API/kernel before configuration access. Take real
+   application EX for inactive/no-writer and SQL proof. Require the same original
+   credential, original data plus the new record and compatible runtime state.
+6. Write the candidate completion and check raw parent/current journals and
+   profiles while EX remains held. Repeat the actual SQL/runtime worker after all
+   slow content reads. Only fast metadata/membership closure follows it, including
+   the private claim-directory identity and completion file.
+
+Pair/native leases span the full operation. Application EX never overlaps the
+live writer. No old stopped-source observation or old boot status runs after the
+intentional append. Original source controls, parent claims, credentials and
+unrelated services are preserved. The new record remains in the database.
+
+An uncertain start, write or stop consumes the claim. Following a possible start,
+failure handling can attempt one independently admitted containment stop without
+requiring successful API authentication. It refuses a replaced/unadmitted actor
+and never sends another stop after stop dispatch. It preserves the original
+failure, possible write and available evidence. Containment never creates normal
+success or removes the test record. A failed/uncertain result cannot be retried
+using another request ID or nonce.
+
+Successful status takes the separately trusted completion hash returned to the
+controller. Do not derive that trust from a candidate file on a failed target.
+Status checks the new stopped tuple, complete journal contract and raw historical
+boot records. It performs no lifecycle action. A failed or containment journal
+refuses. A candidate `complete.json` alone does not establish successful execution;
+a closing failure can leave that file without a returned accepted receipt.
+
+Results omit credentials and row values. `application_write_verified` and
+`rebuild_verified` require the complete successful sequence. `boot_verified`,
+`restore_verified` and `backup_verified` remain false for this operation.
+Unknown failures clear verified flags at the Ansible boundary, suppress private
+exception text and retain possible effects for an allowed run. Independent
+source-unavailable restore and native application qualification remain separate.

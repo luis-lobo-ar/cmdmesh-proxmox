@@ -174,7 +174,11 @@ authenticates a retained-credential read through a verified local socket peer,
 without application EX or host-side database reads. Both phases hold pair/native
 leases and check guest backing, image, owner and references. Neither phase starts
 or enables the service, appends a record, or claims rebuild or restore. The
-claimed native write/read-back/stop/SQL sequence remains pending.
+claimed native write/read-back/stop/SQL sequence remains pending. The developing
+[`lxc_persistence_writer_trial` boundary](docs/persistence-profile.md#claimed-application-lifecycle-developing)
+prepares and controls that once-only test with explicit mutation permission,
+failure containment and separately trusted read-only status. Local qualification
+does not establish native rebuild or disaster-recovery acceptance.
 
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
