@@ -205,6 +205,11 @@ checkpoint. It preserves the exact application data, owner and credentials
 while admitting supported runtime changes. It performs no guest lifecycle
 action and does not advance an operation journal.
 
+Ansible users can call `cmdmesh.proxmox.lxc_persistence_owner_current` with the
+original writer preparation, completion, both externally trusted hashes and all
+13 raw journal strings. Normal and check mode perform the same read-only checks.
+See the [Ansible entry point](docs/persistence-profile.md#ansible-current-owner-entry-point-developing).
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,
