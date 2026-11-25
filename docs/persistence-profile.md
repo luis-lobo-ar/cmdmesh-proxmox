@@ -625,3 +625,35 @@ VMIDs, mixed generations, invalid permissions/nonce, a full or unmounted backup
 store, truncated ciphertext, unsafe restored networking/onboot/HA, unavailable
 source, partial receive/allocation, replay and foreign cleanup. A nested trial
 sharing one physical host does not certify recovery from that host's loss.
+## Shared pair lock
+
+`persistence_pair_lock.locked_pair(datasets, initialize=False)` is an internal
+collection API for workflow authors. It uses the existing backup mutex at
+`/var/lib/cmdmesh/persistence/locks/<pair-key>.json`. The key is the SHA-256 of
+the canonical sorted retained dataset GUIDs. It is independent of the guest
+VMID and the roles' iteration order.
+
+The default opens an existing private runtime and marker without creating files.
+An operation controller can explicitly set `initialize=True` behind its mutation
+gate to create the runtime and marker. The marker uses the existing schema1
+`cmdmesh.proxmox.persistence.pair-lock` document. It stays on disk and is reused
+through the same file identity.
+
+The context holds a nonblocking exclusive file lock and yields the pair key and
+marker path. Another backup or pair-lock user receives a named busy refusal.
+Each operation owns its context. Invoke a backup outside an already held pair
+context, since the existing backup journal acquires the same exclusive mutex.
+The context closes its descriptor on success or failure. It verifies the marker's
+bytes and identity after successful work. Foreign files, permissions, symlinks,
+or replacement refuse without automatic repair or deletion.
+
+Operation controllers must separately validate target identity, ownership,
+source state, and incomplete persistent claims before mutation. A mutex does
+not establish those facts. Keep this pair lock through a later application
+writer's startup while releasing the separate application-file lock first.
+Using a different handoff lock path would allow backups to race that startup.
+
+Local tests use real cross-process locks, including both directions against the
+unchanged backup journal. They also cover marker reuse, independent pairs,
+read-only missing-runtime refusal, failure release, and foreign or replaced
+markers. They qualify this mutex component. Native handoff remains pending.

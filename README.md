@@ -145,6 +145,11 @@ native config. It never starts the guest or attaches retained data. Check mode,
 one-use writes and read-only status share the same preparation contract. Native
 qualification remains pending; see [the stage and guard limits](docs/persistence-profile.md#denied-configuration-generation-developing).
 
+Workflow authors can share the existing backup mutex through
+`persistence_pair_lock.locked_pair`. Its GUID-pair identity serializes backup and
+handoff operations across processes. Read the [shared-lock contract](docs/persistence-profile.md#shared-pair-lock)
+before using it in an operation controller.
+
 The developing `lxc_persistence_blank_boot` module consumes a separately trusted
 successful stage, publishes pinned pre-start checks and submits one isolated OS
 start. It verifies actual kernel/guest readiness and keeps application/recovery
