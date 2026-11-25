@@ -1372,6 +1372,30 @@ This decoder has synthetic and accepted-receipt component tests. Reusable OS
 shutdown/resume, manager reboot and source-unavailable restore remain separate
 qualification work.
 
+### Caller-leased stopped inspection (developing)
+
+`persistence_observe._stopped_source_leased(request, guard, host, raw)` is a
+private context manager for internal lifecycle controllers. The caller must hold
+the real dataset-pair exclusive lease, both native guest read leases and the
+application configuration exclusive lease. The worker neither acquires nor
+releases those leases. There is no public option to skip locking.
+
+The worker accepts only a schema-three owner policy and config bytes matching
+the policy's credential-file hash. It validates current guest ownership,
+configuration, HA membership and pending state before any retained read.
+The API must report the exact stopped guest with PID zero and uptime zero.
+A running guest refuses before guard, backup mount or SQL collection.
+
+Inside the context, the worker reports guarded retained facts, the backup mount
+and a consistent application digest/count. On exit, it checks host epoch, guest,
+mount and guard facts again, then reads SQL again under the caller's lock.
+The caller must close the actual configuration lease and all remaining input
+and control checks before accepting the result.
+
+The existing public `source_state` and `locked_application` interfaces retain
+their lock acquisition. This extraction does not admit a native shutdown or
+resume, initialize operation metadata, change data or qualify recovery.
+
 ### Ordered owner journal (developing)
 
 `persistence_owner_journal` is an internal filesystem component for workflow
