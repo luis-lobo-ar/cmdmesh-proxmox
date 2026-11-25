@@ -1396,6 +1396,77 @@ The existing public `source_state` and `locked_application` interfaces retain
 their lock acquisition. This extraction does not admit a native shutdown or
 resume, initialize operation metadata, change data or qualify recovery.
 
+### Current owner admission (developing)
+
+`persistence_owner_current` provides read-only admission for internal workflow
+authors. Its checkpoint must come from `load_writer_checkpoint` using externally
+trusted successful preparation and completion hashes. A candidate discovered on
+a target after a failed return is not accepted authority.
+
+```python
+from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+    persistence_owner_current,
+)
+
+# accepted_checkpoint comes from load_writer_checkpoint, as described above.
+current = persistence_owner_current.collect(
+    accepted_checkpoint,
+    phase="os_quiesced",
+)
+assert current["guest_image_verified"] is True
+```
+
+`collect` supports exactly `os_quiesced` and `stopped`. It acquires the existing
+dataset-pair exclusive lock, both guest configuration read locks and the
+application exclusive lock. Missing lock metadata refuses. The function does
+not initialize lock files, create claims or write operation heads.
+
+Running admission reuses the kernel, image, account, resource-limit and mount
+validators. It additionally requires the accepted application digest/count,
+retained object metadata, owner/control identities and credential hash. A new
+boot, init, loop device, mount namespace or retained device number must satisfy
+the fresh intrinsic checks. Each observation closes against its own epoch.
+
+Proxmox can rebalance the live CPU assignment without changing the generated
+boot configuration. Admission verifies the live approved single CPU and guest
+affinity separately from agreement between generated and retained boot-time
+selection. It preserves the exact CPU quota, memory limit, swap limit and
+generated stable fingerprint.
+
+Stopped admission checks the exact API configuration and stopped PID/uptime
+zero before retained reads. Both target management units must be loaded,
+inactive and report MainPID zero. Their guard files, declarations and directory
+membership must match. LXC must report `STOPPED`. The cgroup must be absent or
+have no processes, under a verified cgroup-v2 mount. The kernel's
+[`cgroup.events` populated field](https://www.kernel.org/doc/html/latest/admin-guide/cgroup-v2.html#un-populated-notification)
+covers descendants. A missing LXC cgroup parent is permitted after the enclosing
+kernel mount is verified.
+
+In the same manager boot, only ENOENT or a valid changed process identity can
+fence the known prior init. Permission, I/O and malformed-process errors refuse.
+A newly admitted manager boot fences the old epoch explicitly. `prior_runtime`,
+when supplied, must be the externally accepted last running frame for this
+owner. It is validated against the same portable checkpoint.
+
+Stopped collection reports `guest_image_verified=False`. It preserves the
+accepted image profile and root identity, then verifies retained guard facts and
+SQL. It does not execute guest commands or claim that stopped guest program,
+account or unit contents have been freshly inspected. Running admission verifies
+those contents after a separately authorized guarded boot.
+
+Internal `_entry_leased` performs pre-data admission under caller-held pair and
+native leases. `_current_leased` additionally borrows the actual application
+exclusive lease. Its context permits slow journal/history work before a final
+actual observation. Only fixed metadata/process identity checks follow that
+observation. These helpers do not acquire or release the caller's leases.
+
+`validate_current` is a pure portable-content validator. On its own, it neither
+collects fresh evidence nor proves the native stopped-entry conditions. It does
+not resolve an uncertain operation. Any lifecycle controller must independently
+enforce the ordered operation journal, externally trusted predecessor and native
+dispatch contract. OS shutdown/resume, reboot and recovery qualification remain
+separate.
+
 ### Ordered owner journal (developing)
 
 `persistence_owner_journal` is an internal filesystem component for workflow

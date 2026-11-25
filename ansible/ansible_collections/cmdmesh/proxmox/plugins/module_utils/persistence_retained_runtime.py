@@ -470,6 +470,16 @@ def reference_paths(request):
 
 
 def validate_reference(request, evidence):
+    _validate_reference(request, evidence, "os_quiesced")
+
+
+def validate_stopped_reference(request, evidence):
+    """Validate inactive target declarations without claiming guard execution."""
+    _validate_reference(request, evidence, "stopped")
+
+
+def _validate_reference(request, evidence, phase):
+    require(phase in {"os_quiesced", "stopped"}, "reference-phase")
     state.keys(evidence, {"files", "units"})
     expected = reference_paths(request)
     state.keys(evidence["files"], expected)
@@ -501,9 +511,14 @@ def validate_reference(request, evidence):
         path = f"/etc/systemd/system/{unit}.d/50-cmdmesh-reference.conf"
         require(
             info["LoadState"] == "loaded"
-            and info["ActiveState"] == ("active" if index == 0 else "inactive")
+            and info["ActiveState"]
+            == ("active" if phase == "os_quiesced" and index == 0 else "inactive")
             and type(info["MainPID"]) is int
-            and (1 < info["MainPID"] < 2**32 if index == 0 else info["MainPID"] == 0)
+            and (
+                1 < info["MainPID"] < 2**32
+                if phase == "os_quiesced" and index == 0
+                else info["MainPID"] == 0
+            )
             and info["DropInPaths"] == [path]
             and info["directory_membership"] == ["50-cmdmesh-reference.conf"],
             "reference-unit",
@@ -528,7 +543,7 @@ def validate_reference(request, evidence):
             and command["ignore_errors"] is False,
             "reference-command",
         )
-        if index == 0:
+        if phase == "os_quiesced" and index == 0:
             require(
                 command["code"] == 1
                 and command["status"] == 0
@@ -682,6 +697,14 @@ def reference_files(request):
 
 
 def reference_facts(request):
+    return _reference_facts(request, "os_quiesced")
+
+
+def _stopped_reference_facts(request):
+    return _reference_facts(request, "stopped")
+
+
+def _reference_facts(request, phase):
     files = reference_files(request)
     units = {}
     for unit in reference_units(request):
@@ -693,7 +716,7 @@ def reference_facts(request):
         fields["directory_membership"] = sorted(child.name for child in path.iterdir())
         units[unit] = fields
     result = {"files": files, "units": units}
-    validate_reference(request, result)
+    _validate_reference(request, result, phase)
     require(reference_files(request) == files, "reference-changed")
     return result
 
