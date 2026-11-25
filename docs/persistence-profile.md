@@ -1323,3 +1323,51 @@ run and status, without filesystem or native access. Callers must separately
 verify canonical raw bytes, exact membership, metadata, preparation and the
 completion hash returned by a successful run. This content check does not prove
 freshness or turn a candidate completion from a failed run into success.
+
+### Accepted writer checkpoint (developing)
+
+`persistence_owner_checkpoint.load_writer_checkpoint` decodes an already accepted
+writer trial into versioned historical evidence. A workflow can retain that
+evidence across a manager reboot without calling an old current-status operation
+against a different boot epoch.
+
+```python
+from ansible_collections.cmdmesh.proxmox.plugins.module_utils.persistence_owner_checkpoint import (
+    load_writer_checkpoint,
+)
+
+checkpoint = load_writer_checkpoint(
+    prepared_raw=accepted_preparation_bytes,
+    prepared_sha256=trusted_preparation_sha256,
+    completion_raw=accepted_completion_bytes,
+    completion_sha256=trusted_successful_completion_sha256,
+    records=raw_journal_records,
+)
+expected_application = checkpoint["completion"]["runtime"]["application"]
+```
+
+`records` must contain exactly the 12 journal records and `complete.json`, as raw
+bytes. Completion trust must come from a successful SDK return, not a candidate
+file discovered after a failed or unknown run. The helper checks canonical
+hashes, exact shapes, typed private root metadata, ancestor history, the phase
+digest, the shared journal contract, original-data preservation and the committed
+append. It also rejects contradictory exported actor identity, namespace,
+mapping, unit, argv, root-device and cgroup facts. It does not invent unexported
+init mount-namespace or executable-inode comparisons.
+
+The returned document has type
+`cmdmesh.proxmox.persistence.owner-checkpoint`, schema version 1, the decoded
+`prepared` and `completion` documents, and their two trusted hashes. Historical
+boot/process/device facts remain in the evidence. They are not current bindings.
+
+This helper does not read files, inspect a process, call status, acquire a lock,
+initialize an operation head or perform a lifecycle action. It does not prove
+that a directory still has the recorded membership. A consumer must obtain and
+close current evidence separately before any operation. A new host boot, init,
+loop device, approved CPU placement or ZFS device requires fresh intrinsic
+validation; deleting those facts from an old frame is not current admission.
+
+The owned native application trial qualified the preceding writer sequence.
+This decoder has synthetic and accepted-receipt component tests. Reusable OS
+shutdown/resume, manager reboot and source-unavailable restore remain separate
+qualification work.
