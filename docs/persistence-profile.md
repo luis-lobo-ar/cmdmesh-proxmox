@@ -520,6 +520,75 @@ attach retained binds, initialize data or reset credentials. A separate frozen
 boot policy must bind the now-observed generated config before replacing denials.
 No native stage or first boot is qualified by the local tests.
 
+### Blank OS runtime proof (developing)
+
+The next component separates stopped pre-start facts from running kernel facts.
+`persistence_blank_runtime` preserves root image inode/size/ownership/UUID and
+current storage resolution while allowing OS writes to change mtime/ctime. It
+reuses the existing PID/birth, namespace and effective-memory readers, and checks
+actual loop backing, UID/GID maps, enforced AppArmor, separate network namespace,
+loopback-only guest interfaces, one approved effective CPU, the fixed CPU quota,
+512MiB memory and zero swap. The reference program, account, unit and retained
+data/config paths must still be absent. The original source stays stopped.
+
+The running observer holds the existing native PVE configuration lock shared and
+read-only; it never creates a lock file. This excludes managed configuration/
+stop writers during its protected reads. Do not hold this observer across a
+native start POST or call it from the pre-start guard, whose native worker already
+holds the exclusive configuration lock. API projections omit advancing counters
+and uptime. Initial API facts are validated before kernel reads, and initial
+kernel facts are validated before any guest execution. Repeated protected facts
+close around the guest probe; named root/generated files, storage resolution and
+kernel identity are rechecked after slow commands before returning a proof.
+
+`systemd_exec` reads only the typed `ExecStartPre` D-Bus property through busctl.
+It preserves exact program, argv, ignore-errors flag, PID, exit status and clocks.
+Command declaration and observed successful execution are distinct. Cleared
+execution history is not a durable audit trail; a future boot caller must also
+bind its native task and newly observed kernel process identity. These local
+helpers do not publish guards, boot a guest or qualify recovery. Native runtime
+and first-boot qualification remain pending.
+
+### One blank OS start (developing)
+
+The internal `persistence_blank_boot` backend prepares from the exact previous
+stage preparation and a separately trusted completion hash. It freezes the whole
+current stopped recipient, generated policy, both deny-file identities and the
+pinned standalone guard source. Opaque or rehashed missing unit/generated proofs
+refuse before use. No allowing file or boot journal is written during preparation.
+
+A real boot consumes a permanent target claim before writes. It publishes both
+allowing drop-ins while the false commands remain, reloads/verifies both command
+chains and runs the guard against the stopped guest. Only then does it remove the
+exact owned false files, reload/recheck, and submit one verified-HTTPS native start.
+It retains the acknowledgement/UPID, verifies native task/log success and actual
+kernel/guest readiness, closes the original stopped-source context and repeats
+protected runtime/guard/unit/task checks before completion. It never installs the
+reference application, attaches retained binds, initializes data or changes
+credentials. The source data lock stays held only because this is an app-free OS.
+
+Unknown dispatch or publication failures retain the consumed attempt and partial
+outputs; status never republishes/reloads/reposts or writes a new completion. A
+new status observation can qualify current owned state without changing the
+original failure. If a completion exists, current PID/birth/root image and unit
+process identity must still match it. Approved CPU rebalancing may change the one
+effective CPU within policy; it cannot change the quota or cardinality. Cleared
+execution history is reported explicitly and does not invent a positive history
+record. Native task, configured guard and current kernel process checks still
+apply. The module `lxc_persistence_blank_boot` supplies prepare, check-mode boot,
+once-only boot and read-only status through the ordinary Ansible boundary. Its
+stage completion hash must come from a successful trusted controller result.
+A failed attempt can leave a candidate completion record followed by failure;
+that node file alone is never authority. The backend closes artifacts after slow
+runtime work and closes the complete proof again after publishing/reading the
+completion candidate before any positive return. It preserves late failures.
+
+Eleven local modeled backend cases pass, including partial publication, unknown
+acknowledgement, opaque proof, late process and late artifact changes. Five
+boundary cases cover permission/privacy/hash behavior and a real localhost
+AnsiballZ check proving that packaged standalone guard source retains its exact
+pin. The private normal-executor trial and actual first boot remain pending.
+
 ## Recovery boundary
 
 Restore must work with the source VM stopped and its disks unavailable to the
