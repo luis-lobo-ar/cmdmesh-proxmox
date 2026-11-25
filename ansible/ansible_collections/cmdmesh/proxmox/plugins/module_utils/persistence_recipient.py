@@ -693,8 +693,10 @@ def validate_target_config(request, config):
     ):
         actual = config.get(key, 0 if key == "onboot" else None)
         require(type(actual) is int and actual == value, "target-config")
+    limit = config.get("cpulimit")
     require(
-        type(config.get("cpulimit")) in {int, float} and config["cpulimit"] == 1,
+        (type(limit) in {int, float} and limit == 1)
+        or (type(limit) is str and limit == "1"),
         "target-cpu-limit",
     )
     tags = config.get("tags", "").split(";")

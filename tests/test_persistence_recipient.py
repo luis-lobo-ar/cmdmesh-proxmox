@@ -511,6 +511,10 @@ class NativeShapeTests(unittest.TestCase):
             ),
             "local:102/vm-102-disk-0.raw",
         )
+        self.assertEqual(
+            recipient.validate_target_config(request, {**config, "cpulimit": "1"}),
+            "local:102/vm-102-disk-0.raw",
+        )
         for key, value in (
             ("net0", "name=eth0,bridge=vmbr0"),
             ("mp0", "/srv/data,mp=/var/lib/reference-ledger"),
@@ -520,6 +524,10 @@ class NativeShapeTests(unittest.TestCase):
             ("lock", "create"),
             ("cpulimit", 0),
             ("cpulimit", True),
+            ("cpulimit", "0"),
+            ("cpulimit", "01"),
+            ("cpulimit", "1.0"),
+            ("cpulimit", "NaN"),
             ("onboot", 1),
             ("unprivileged", 0),
             ("rootfs", "local:101/vm-101-disk-0.raw,size=2G"),

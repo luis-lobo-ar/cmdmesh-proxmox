@@ -444,6 +444,9 @@ PVE pending rows are also compared in key order while retaining every value;
 duplicate rows and pending/deleted settings refuse. The config parser's optional
 single trailing description newline is accepted without trimming or changing
 the description text. Other description changes remain a mismatch.
+The fixed CPU limit accepts numeric1 or PVE's exact JSON string`"1"`; booleans,
+zero, other strings and other limits refuse. This reads the configured aggregate
+limit; it does not establish runtime enforcement while the guest is stopped.
 
 Success reports `provisioned_verified` only; `rebuild_verified` and
 `restore_verified` stay false. A failed/uncertain create preserves its claim and
