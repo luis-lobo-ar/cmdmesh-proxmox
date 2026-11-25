@@ -250,11 +250,9 @@ def get(path, *arguments):
     )
 
 
-def task_state(binding, upid, *, kind="vzstart"):
+def validate_task_status(binding, upid, task, *, kind="vzstart"):
+    """Validate one task-status document without host, network or file access."""
     expected = parse_upid(binding, upid, kind=kind)
-    check_host(binding)
-    path = "/nodes/" + expected["node"] + "/tasks/" + upid
-    task = get(path + "/status")
     require(
         type(task) is dict
         and set(task) <= set(expected) | {"status", "exitstatus"}
@@ -262,7 +260,8 @@ def task_state(binding, upid, *, kind="vzstart"):
             task.get(key) == value and type(task.get(key)) is type(value)
             for key, value in expected.items()
         )
-        and task.get("status") in {"running", "stopped"},
+        and type(task.get("status")) is str
+        and task["status"] in {"running", "stopped"},
         "native-task-status",
     )
     require(
@@ -270,6 +269,14 @@ def task_state(binding, upid, *, kind="vzstart"):
         or (task["status"] == "stopped" and type(task.get("exitstatus")) is str),
         "native-task-status",
     )
+
+
+def task_state(binding, upid, *, kind="vzstart"):
+    expected = parse_upid(binding, upid, kind=kind)
+    check_host(binding)
+    path = "/nodes/" + expected["node"] + "/tasks/" + upid
+    task = get(path + "/status")
+    validate_task_status(binding, upid, task, kind=kind)
     log = get(path + "/log", "--start", "0", "--limit", "100")
     native_outcome(task, log)
     return task, log

@@ -1516,9 +1516,11 @@ implementers. It stores an ordered operation chain under the fixed manager path
 shutdown/resume command.
 
 The namespace uses the retained dataset-pair key. `Binding` also requires the
-hash of the fully validated owner checkpoint. The checkpoint binds the owner,
-generation, guest and retained resources. A new nonce or manager boot cannot
-select a different operation history for that pair.
+hash of the fully validated owner checkpoint and the exact `GuestBinding`.
+The checkpoint binds the owner, generation, guest and retained resources.
+A new nonce or manager boot cannot select a different operation history for
+that pair. Journal schema 2 pins the `owner-os-action-v1` profile. Schema 1
+metadata refuses without an automatic upgrade or reset.
 
 The caller must hold the real pair-exclusive lease throughout each operation.
 Constructing a `Binding`, `Pending` or `Candidate` does not acquire that lease or
@@ -1530,13 +1532,36 @@ current ownership, runtime, guest backing and application state.
 | `_initialize(binding)` | Creates private profile, genesis and head records. Repeating an exact unused initialization makes no changes. Used, partial or foreign state refuses. |
 | `_inspect(binding, expected_head_sha256)` | Reads and validates the complete chain against an externally trusted head. It creates no directories or records. |
 | `_begin(binding, predecessor, kind, prepared_sha256)` | Records and syncs one shutdown or resume intent, then publishes a pending head before returning. |
-| `_complete(pending, evidence)` | Records caller-validated evidence and returns a candidate successor after closing the filesystem checks. |
+| `_append_phase(pending, stage, payload)` | Appends the next fixed phase, verifies its exact intended hash, and returns a fresh pending token. Older tokens refuse. |
+| `_complete(pending, evidence)` | Requires all three phases and an accepted terminal task. Records caller-validated evidence and returns a candidate successor after closing the filesystem checks. |
 | `_fail(pending, reason, outcome)` | Attempts to retain an immutable failure record. It does not reset, rewind or remove an attempt. |
+| `validate_phase_capture(binding, intent, records, descriptors)` | Validates captured raw phase bytes, fixed paths, file metadata, and links without filesystem or network access. |
+
+Each operation stores these phases in its existing sequence directory:
+
+| Phase | Required payload |
+| --- | --- |
+| `dispatch.json` | Exact action, guest binding, preparation and entry hashes, host epoch, clock, and fixed native parameters. Shutdown uses a 60-second timeout with forced stop disabled. Resume uses start without parameters. |
+| `ack.json` | A TLS-verified UPID for the bound guest, action, and dispatch clock interval. |
+| `terminal.json` | Stopped task status for the acknowledged UPID, a complete bounded log, and the outcome recomputed by the shared native classifier. |
+
+Each phase links to its predecessor's raw hash. Unknown fields, secret fields,
+duplicate phases, skipped phases, and target or action mismatches refuse.
+A rejected terminal task can remain as evidence but cannot complete an
+operation. Recording a valid payload does not prove that a native action ran.
+
+`View`, `Pending`, and `Candidate` expose a `PhaseChain` with decoded records,
+native file descriptors, and the canonical descriptor-map hash. Each descriptor
+contains the fixed path, raw-byte hash, and nine typed file-identity values.
+The result record binds the actual descriptor map and its hash. Capture
+validation permits an exact phase prefix for diagnostics. An incomplete prefix
+cannot complete an operation or authorize a retry.
 
 The controller must accept the fully verified return before using a candidate
 as successor authority. A head found on disk after a failed or unknown return
-does not establish success. Completion evidence is opaque to this component.
-The native workflow remains responsible for validating that evidence.
+does not establish success. The separate caller-supplied completion evidence
+remains opaque to this component. The native workflow must validate current
+ownership, runtime, application state, and native postconditions.
 
 Pending operations, orphan slots, unexpected files, stale heads, changed file
 identities and permissive metadata refuse further operations. There is no
@@ -1544,12 +1569,16 @@ automatic cleanup, reset or adoption. A failure after candidate publication
 retains the candidate and its failure barrier. An unresolved operation needs a
 separately qualified reconciliation procedure.
 
-Files require mode `0600`, one link and the executing identity. Directories
+Files require mode `0600`, one link and the executing identity. Captured native
+phase descriptors require root ownership. Directories
 require mode `0700`. The component checks canonical content, strict schemas,
 exact membership and file identities, then repeats the filesystem closure
 before returning. Each chain permits at most 4,096 operations.
 
-Eighteen synthetic filesystem tests cover repeated clean cycles, real lock
-handoff, pending requests, stale predecessors, partial writes and late metadata
-changes. These tests qualify metadata ordering only. Native lifecycle
-integration, manager reboot and source-unavailable restore remain unqualified.
+Synthetic filesystem tests cover repeated clean cycles, real lock handoff,
+pending requests, stale predecessors, phase ordering, partial writes, valid
+record substitution after a write, and late metadata changes. Pure capture
+tests cover raw hashes, metadata, and incomplete prefixes. Run the journal tests
+with `python -m unittest discover -s tests -p 'test_persistence_owner_journal*.py' -v`.
+These tests qualify metadata ordering only. Native lifecycle integration,
+manager reboot, and source-unavailable restore remain unqualified.

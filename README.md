@@ -191,6 +191,8 @@ admit the current host epoch, ownership, guest backing and application state.
 The internal [owner lifecycle journal](docs/persistence-profile.md#ordered-owner-journal-developing)
 orders shutdown and resume requests under one retained dataset pair. It rejects
 stale predecessors and preserves incomplete attempts across controller restarts.
+Each request requires ordered dispatch, acknowledged native task, and terminal
+task records. Completion binds their raw hashes and file identities.
 This component writes metadata only. Native shutdown/resume integration and its
 infrastructure qualification remain in development.
 
