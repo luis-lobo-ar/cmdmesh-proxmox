@@ -479,14 +479,17 @@ def claim(prepared, trusted):
     return directory, intent_sha
 
 
-def parse_upid(request, upid):
+def parse_upid(request, upid, *, kind="vzcreate"):
+    require(kind in {"vzcreate", "vzstart", "vzshutdown"}, "native-task-operation")
     node = request["source_request"]["source"]["selector"]["node"]
     vmid = str(request["target"]["vmid"])
     match = (
         re.fullmatch(
             r"UPID:"
             + re.escape(node)
-            + r":([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):vzcreate:"
+            + r":([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):"
+            + kind
+            + ":"
             + vmid
             + r":root@pam:",
             upid,
@@ -503,15 +506,33 @@ def parse_upid(request, upid):
         "pid": pid,
         "pstart": pstart,
         "starttime": started,
-        "type": "vzcreate",
+        "type": kind,
         "id": vmid,
         "user": "root@pam",
     }
 
 
 def post_create(request):
+    return _post(request, "create")
+
+
+def post_guest_action(request, action):
+    require(action in {"start", "shutdown"}, "native-guest-operation")
+    return _post(request, action)
+
+
+def _post(request, action):
+    validate_request(request)
+    require(action in {"create", "start", "shutdown"}, "native-operation")
     source = request["source_request"]["source"]
     node = source["selector"]["node"]
+    path = "/api2/json/nodes/" + node + "/lxc"
+    parameters = create_request(request) if action == "create" else {}
+    kind = {"create": "vzcreate", "start": "vzstart", "shutdown": "vzshutdown"}[action]
+    if action == "shutdown":
+        parameters = {"timeout": "60", "forceStop": "0"}
+    if action != "create":
+        path += "/" + str(request["target"]["vmid"]) + "/status/" + action
     ca, _ = observe.read_regular("/etc/pve/pve-root-ca.pem", 65536)
     cert, _ = observe.read_regular("/etc/pve/nodes/" + node + "/pve-ssl.pem", 65536)
     leaf = ssl.PEM_cert_to_DER_cert(cert.decode("ascii"))
@@ -557,8 +578,8 @@ def post_create(request):
                 connection.sock = secure
                 connection.request(
                     "POST",
-                    "/api2/json/nodes/" + node + "/lxc",
-                    urlencode(create_request(request)),
+                    path,
+                    urlencode(parameters),
                     {
                         "Content-Type": "application/x-www-form-urlencoded",
                         "Accept": "application/json",
@@ -580,15 +601,15 @@ def post_create(request):
                 )
                 data = observe.decode(body)
                 state.keys(data, {"data"})
-                parse_upid(request, data["data"])
+                parse_upid(request, data["data"], kind=kind)
                 result = {"upid": data["data"], "tls_verified": True}
     finally:
         credentials = auth = None
     return result
 
 
-def task_state(request, upid):
-    expected = parse_upid(request, upid)
+def task_state(request, upid, *, kind="vzcreate"):
+    expected = parse_upid(request, upid, kind=kind)
     path = "/nodes/" + expected["node"] + "/tasks/" + upid
     task = get(path + "/status")
     require(

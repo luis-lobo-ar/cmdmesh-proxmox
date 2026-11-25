@@ -656,9 +656,13 @@ class CreateWireTests(unittest.TestCase):
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
+                kind = {
+                    "/api2/json/nodes/localhost/lxc/102/status/start": "vzstart",
+                    "/api2/json/nodes/localhost/lxc/102/status/shutdown": "vzshutdown",
+                }.get(self.path, "vzcreate")
                 self.wfile.write(
                     json.dumps(
-                        {"data": upid}
+                        {"data": upid.replace("vzcreate", kind)}
                         if code == 200
                         else {"error": "PRIVATE_SERVER_SENTINEL"}
                     ).encode()
@@ -680,7 +684,7 @@ class CreateWireTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=5)
 
-    def call(self, port, *, node="localhost", bad_leaf=False):
+    def call(self, port, *, node="localhost", bad_leaf=False, operation="create"):
         request = example_request()
         raw = self.cert.read_bytes()
         fingerprint = state.sha256(ssl.PEM_cert_to_DER_cert(raw.decode()))
@@ -710,7 +714,11 @@ class CreateWireTests(unittest.TestCase):
         ) as auth, mock.patch.object(
             recipient.socket, "create_connection", side_effect=redirected
         ):
-            result = REAL_POST(request)
+            result = (
+                REAL_POST(request)
+                if operation == "create"
+                else recipient.post_guest_action(request, operation)
+            )
         self.assertEqual(
             auth.call_args.args[0],
             [
@@ -749,6 +757,65 @@ class CreateWireTests(unittest.TestCase):
                 self.call(port)
         self.assertEqual(len(requests), 1)
         self.assertNotIn("PRIVATE", str(failed.exception))
+
+    def test_finite_guest_actions_use_exact_target_no_create_parameters(self):
+        for operation, kind in (("start", "vzstart"), ("shutdown", "vzshutdown")):
+            with self.server() as (port, requests):
+                result, _ = self.call(port, operation=operation)
+            self.assertTrue(result["tls_verified"])
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(requests[0]["method"], "POST")
+            self.assertEqual(
+                requests[0]["path"],
+                "/api2/json/nodes/localhost/lxc/102/status/" + operation,
+            )
+            self.assertEqual(
+                requests[0]["parameters"],
+                (
+                    {}
+                    if operation == "start"
+                    else {
+                        "timeout": ["60"],
+                        "forceStop": ["0"],
+                    }
+                ),
+            )
+            self.assertIn(":" + kind + ":102:root@pam:", result["upid"])
+            self.assertNotIn("PRIVATE", json.dumps(result))
+
+    def test_unknown_guest_operations_refuse_before_authentication_or_socket(self):
+        with mock.patch.object(recipient.subprocess, "run") as auth, mock.patch.object(
+            recipient.socket, "create_connection"
+        ) as connect:
+            for operation in ("create", "stop", "reboot", "destroy", "../start", None):
+                with self.assertRaises(state.PersistenceError):
+                    recipient.post_guest_action(example_request(), operation)
+            auth.assert_not_called()
+            connect.assert_not_called()
+
+    def test_guest_actions_keep_tls_failures_and_redirects_nonretryable(self):
+        for operation in ("start", "shutdown"):
+            with self.server() as (port, requests):
+                with self.assertRaises(state.PersistenceError):
+                    self.call(port, operation=operation, bad_leaf=True)
+                self.assertEqual(requests, [])
+            with self.server(302) as (port, requests):
+                with self.assertRaises(state.PersistenceError):
+                    self.call(port, operation=operation)
+                self.assertEqual(len(requests), 1)
+
+    def test_guest_task_identity_cannot_be_a_create_or_other_guest(self):
+        for kind in ("vzstart", "vzshutdown"):
+            good = "UPID:node-a:00000010:00000020:00000030:" + kind + ":102:root@pam:"
+            self.assertEqual(
+                recipient.parse_upid(example_request(), good, kind=kind)["type"], kind
+            )
+            for wrong in (
+                good.replace(kind, "vzcreate"),
+                good.replace(":102:", ":101:"),
+            ):
+                with self.assertRaises(state.PersistenceError):
+                    recipient.parse_upid(example_request(), wrong, kind=kind)
 
 
 if __name__ == "__main__":
