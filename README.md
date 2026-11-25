@@ -155,6 +155,13 @@ Retained-source controllers can use the separate
 without supplying a blank-guest policy. The native writer must run after its
 target read lease has closed.
 
+The developing `lxc_persistence_attach` module configures the reference data and
+configuration binds on a stopped replacement. It denies normal and debug starts
+for both guests, uses three digest-checked native updates to disable protection,
+add the binds and restore protection, and leaves all starts denied. A partial
+failure retains its claim and needs reconciliation. It does not prove a working
+rebuild or restore. See [stopped attachment](docs/persistence-profile.md#stopped-retained-attachment-developing).
+
 The developing `lxc_persistence_blank_boot` module consumes a separately trusted
 successful stage, publishes pinned pre-start checks and submits one isolated OS
 start. It verifies actual kernel/guest readiness and keeps application/recovery
