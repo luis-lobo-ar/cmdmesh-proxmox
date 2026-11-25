@@ -905,8 +905,63 @@ descriptor check. Unrelated mount-table changes are excluded.
 
 These primitives create no files and execute no guest command. The caller must
 validate actual dataset GUIDs/ownership and hold native configuration leases.
-The full phase-aware collector and application-quiescence proof remain developing;
-the bind helper alone does not qualify boot, application health or restore.
+The bind helper alone does not qualify boot, application health or restore.
+
+## Running OS with a quiesced application (developing)
+
+`lxc_persistence_runtime` exposes read-only inspection for `phase: os_quiesced`.
+The matching library is `persistence_retained_runtime.collect(request, profile,
+phase="os_quiesced")`. The old source observer remains stopped-only. The new API
+does not start or stop a guest, remove a denial, enable a service, repair state or
+write an application record. Check mode runs the same observations.
+
+The caller supplies the corrected schema-three source request and an image
+profile derived from its qualified stopped-owner and image checkpoints. The
+profile has these exact fields:
+
+| Field | Required value |
+| --- | --- |
+| `schema_version` | Integer `1` |
+| `guard_python` | Exact supported corrected standalone guard source |
+| `image_python` | Exact supported standalone image helper source |
+| `config` | Expected retained guest configuration, including both binds |
+| `rootfs` | `path`, `volume`, `uuid`, and the first seven stopped-image `identity` fields |
+| `accounts.base` | Original image's account database hashes excluding the managed account |
+| `accounts.subids` | Original image's subordinate-ID file hashes or explicit absence |
+
+Only guard1063 and image helper21bd are executable inputs. The profile supports
+the reference Ubuntu/amd64, local2GiB, memory512MiB, oneCPU/no-swap configuration.
+Unknown sources, unsupported profiles and `active_writer` refuse before collection.
+
+The collector admits the host and API identity before guest execution. It holds
+the existing retained-pair EX mutex and both old/current native config SH leases.
+It checks actual kernel identity, target references and guest bind backing, then
+the image/account and inactive, disabled application unit. It takes the real
+application configuration EX before lower retained-state checks and consistent
+SQLite inspection. It does not call the stopped collector or the image helper's
+retained-path-absence checks.
+
+Closing observations repeat image, API, kernel, binds, ownership, references and
+SQL. Only nondecreasing typed uptime and the root image's normal mtime/ctime are
+excluded from equality. Image, bind and kernel evidence refresh after the last
+SQL query. A final database byte/hash/metadata seal rejects changed content and
+SQLite sidecars without another slow SQL query. Owner/reference-file and init
+identity checks close afterwards. Normal and debug target units must contain only the
+corrected reference. The normal unit must be active with a successful typed
+pre-start result; the debug unit remains inactive. Application artifacts, account
+baselines, permissions and credential identity must remain exact.
+
+`validate(request, profile, phase, evidence)` checks the same frame without native
+commands or local source-path access. The guest probe executes the pinned lower
+image helpers and returns hashes and metadata, never shadow contents or tokens.
+It rescans the account/process state after its closing environment and unit reads.
+The Ansible boundary redacts input invocation and unexpected errors.
+
+`os_runtime_verified` and `application_quiesced` describe this observation only.
+Mutation, boot-operation, rebuild, restore and backup flags remain false. Native
+retained-runtime qualification is pending. This component does not yet release a
+writer or test its authenticated socket API. A complete rebuild/restore needs
+those later phases and their independent application-level acceptance.
 
 ## Known failed-guard reconciliation (developing)
 
