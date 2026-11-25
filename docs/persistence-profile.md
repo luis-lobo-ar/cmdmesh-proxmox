@@ -1582,3 +1582,59 @@ tests cover raw hashes, metadata, and incomplete prefixes. Run the journal tests
 with `python -m unittest discover -s tests -p 'test_persistence_owner_journal*.py' -v`.
 These tests qualify metadata ordering only. Native lifecycle integration,
 manager reboot, and source-unavailable restore remain unqualified.
+
+### Same-owner OS transitions (developing)
+
+`persistence_owner_transition` is an internal SDK for a quiesced reference
+application whose accepted writer checkpoint comes from `load_writer_checkpoint`.
+It has no public Ansible action yet. Its local tests use real filesystem locks
+and modeled PVE responses. Native shutdown and restart remain unqualified.
+
+| SDK function | Contract |
+| --- | --- |
+| `genesis_sha256(checkpoint)` | Computes the proposed initial head without filesystem or network access. |
+| `initialize(checkpoint, expected_head_sha256)` | Explicitly creates unused journal metadata after current running-state admission. Performs no native action. Partial, foreign, or used metadata refuses. |
+| `prepare(checkpoint, predecessor_sha256, kind, prior_runtime=None)` | Reads a ready journal and current state. Returns a preparation for `shutdown` or `resume` without writing metadata. |
+| `operate(checkpoint, prepared_raw, prepared_sha256, timeout_seconds=240)` | Rechecks preparation, begins one operation, dispatches one fixed native request, and verifies its final state. A pending attempt cannot become another request. |
+| `status(checkpoint, prepared_raw, prepared_sha256, accepted_head_sha256, prior_runtime=None)` | Reads a separately accepted transition, its exact native task, and current state. Writes nothing and never dispatches a request. |
+| `validate_result(checkpoint, prepared_raw, prepared_sha256, result)` | Checks captured return fields, raw records, native task metadata, and application proofs without filesystem or network access. Does not establish fresh native truth. |
+
+Preparation binds the accepted checkpoint, predecessor, action, current entry,
+host epoch, and backup mount. For shutdown, it also binds init process birth and
+namespace identity and a nondecreasing uptime floor. A reused API PID cannot
+satisfy that preparation. Fresh current validation still admits approved live
+CPU selection through its intrinsic joins.
+
+The workflow holds the real dataset-pair exclusive lock, retired guest shared
+lock, and application exclusive lock throughout the native request. The target
+guest shared lock covers current-state workers. The workflow releases that lock
+before POST and task polling, then reacquires it after the task is terminal.
+The shared API supplies graceful shutdown parameters with forced stop disabled.
+
+Before POST, the workflow writes intent and dispatch inside the current worker
+context. The closing current worker and fast checks must pass before dispatch.
+The workflow records ACK before polling and terminal evidence after the task.
+It then admits the intended final state and publishes a candidate inside another
+current worker context. Its closing worker and every lease closure must pass before
+the caller receives the candidate hash. Slow history and journal reads precede
+the final worker. Fast file, process, and membership checks follow it.
+
+The workflow reads original writer and boot history as immutable raw evidence.
+It never calls the old boot status validator against application data that has
+since changed. It preserves the application credential, record hashes, owner,
+retired controls, root image, and dataset roles. It starts no application worker
+and writes no application record.
+
+The return includes six canonical raw records: intent, dispatch, ACK, terminal,
+result, and HEAD. Their bytes match the files recorded by the journal. The result
+binds both current-state proofs and the actual dispatch entry. The pure return
+validator recomputes phase descriptors, record and head hashes, preparation
+bindings, and native outcome. Controllers can check the captured evidence with
+this shared validator before accepting a successor hash.
+
+Failures preserve the pending attempt, native phases, and any candidate result.
+A best-effort failure record retains whether dispatch was unreachable, unknown,
+failed, or refused by postconditions. No automatic compensation or retry occurs.
+A found target HEAD is not external acceptance. Metadata-only resolution,
+including worker fencing for unknown acknowledgements, remains a separate
+developing operation. This SDK does not qualify manager reboot or recovery.
