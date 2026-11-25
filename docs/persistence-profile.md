@@ -551,6 +551,25 @@ and first-boot qualification remain pending.
 
 ### One blank OS start (developing)
 
+Native task acceptance uses the shared complete-log classifier. It accepts `OK`
+or the exact known systemd255 nesting warning with `WARNINGS: 1`; unknown,
+truncated, inconsistent or error logs refuse. No nesting setting is changed.
+Either accepted task result still requires the full current guard, process,
+rootfs, namespace, UID/GID map and resource-limit proof. A native success or a
+running status alone cannot establish a verified boot.
+
+For a running CT, native PVE derives `status.maxdisk` from filesystem capacity;
+for a stopped CT it uses configured image bytes. Filesystem overhead makes those
+different values. The running observer requires a positive integral filesystem
+capacity bounded by the raw image size, while the kernel proof independently
+pins the exact raw size, inode, backing loop, storage resolution and filesystem
+UUID. It does not resize or repair either layer.
+
+An older checker could reject that known warning after the guest started.
+Use read-only `status` against the original consumed preparation to qualify the
+current runtime. Retain the failed journal and original result; status does not
+publish completion, reload units, alter guard files or issue another start.
+
 The internal `persistence_blank_boot` backend prepares from the exact previous
 stage preparation and a separately trusted completion hash. It freezes the whole
 current stopped recipient, generated policy, both deny-file identities and the
