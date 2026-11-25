@@ -520,6 +520,35 @@ attach retained binds, initialize data or reset credentials. A separate frozen
 boot policy must bind the now-observed generated config before replacing denials.
 No native stage or first boot is qualified by the local tests.
 
+### Blank OS runtime proof (developing)
+
+The next component separates stopped pre-start facts from running kernel facts.
+`persistence_blank_runtime` preserves root image inode/size/ownership/UUID and
+current storage resolution while allowing OS writes to change mtime/ctime. It
+reuses the existing PID/birth, namespace and effective-memory readers, and checks
+actual loop backing, UID/GID maps, enforced AppArmor, separate network namespace,
+loopback-only guest interfaces, one approved effective CPU, the fixed CPU quota,
+512MiB memory and zero swap. The reference program, account, unit and retained
+data/config paths must still be absent. The original source stays stopped.
+
+The running observer holds the existing native PVE configuration lock shared and
+read-only; it never creates a lock file. This excludes managed configuration/
+stop writers during its protected reads. Do not hold this observer across a
+native start POST or call it from the pre-start guard, whose native worker already
+holds the exclusive configuration lock. API projections omit advancing counters
+and uptime. Initial API facts are validated before kernel reads, and initial
+kernel facts are validated before any guest execution. Repeated protected facts
+close around the guest probe; named root/generated files, storage resolution and
+kernel identity are rechecked after slow commands before returning a proof.
+
+`systemd_exec` reads only the typed `ExecStartPre` D-Bus property through busctl.
+It preserves exact program, argv, ignore-errors flag, PID, exit status and clocks.
+Command declaration and observed successful execution are distinct. Cleared
+execution history is not a durable audit trail; a future boot caller must also
+bind its native task and newly observed kernel process identity. These local
+helpers do not publish guards, boot a guest or qualify recovery. Native runtime
+and first-boot qualification remain pending.
+
 ## Recovery boundary
 
 Restore must work with the source VM stopped and its disks unavailable to the
