@@ -31,6 +31,9 @@ REFERENCE_GUARD_SHA256 = (
 HANDOFF_GUARD_SHA256 = (
     "68a40e2c9f696d5535085c94d4f55bc93d5b03644dfcbe254e0b5629403eb270"
 )
+FIXED_HANDOFF_GUARD_SHA256 = (
+    "1063b39ce19c688667c35f376adfa268e245be2b5758e0f4cb36593b336064e3"
+)
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 IDENTITY_SQL = "CREATE TABLE identity (instance_id TEXT NOT NULL)"
 ENTRIES_SQL = "CREATE TABLE entries (sequence INTEGER PRIMARY KEY, operation_id TEXT NOT NULL UNIQUE, value TEXT NOT NULL)"
@@ -100,7 +103,8 @@ def read_regular(path, limit):
 def load_guard(reference):
     state.keys(reference, {"path", "sha256"})
     require(
-        reference["sha256"] in (REFERENCE_GUARD_SHA256, HANDOFF_GUARD_SHA256),
+        reference["sha256"]
+        in (REFERENCE_GUARD_SHA256, HANDOFF_GUARD_SHA256, FIXED_HANDOFF_GUARD_SHA256),
         "guard-unsupported",
     )
     raw, info = read_regular(reference["path"], 65536)

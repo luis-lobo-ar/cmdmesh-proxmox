@@ -776,8 +776,9 @@ is still pending.
 
 ## Stopped successor source observation (developing)
 
-The source observer accepts two content-addressed standalone guards: legacy
-schema-two `8a96f2ce...` and owner-aware schema-three `68a40e2c...`. The selected
+The source observer accepts three content-addressed standalone guards: legacy
+schema-two `8a96f2ce...`, owner-aware schema-three `68a40e2c...`, and corrected
+schema-three `1063b39c...`. The selected
 program's validator enforces its policy schema. Unsupported hashes or changed
 bytes refuse before execution; an operator cannot supply an arbitrary hook.
 The existing request, host identity, guest isolation, exact bind layout, backup
@@ -812,6 +813,15 @@ operation's pair/configuration leases and managed start denials, then receive an
 explicit successor observation. Preserve immutable original code and history.
 These local contracts do not publish owner records/guards, retire a legacy
 reference, start a guest/writer or qualify native ownership handoff.
+
+The corrected guard records either the explicit storage configuration or its
+observed absence when Proxmox uses default local storage. It does not create the
+file. The parent identity and file presence are checked through a held directory
+descriptor, with full file sealing when present. Schema-three still requires the
+same owner/retirement facts, stopped-state gate, native lease and SQL closure.
+Admitting this known program hash does not reconcile an earlier failed operation
+or authorize overwriting its files. CI retains separate immutable old and fixed
+guard fixtures, so both contracts remain exercised.
 
 ## Initial stopped owner publication (developing)
 
@@ -862,3 +872,30 @@ Native qualification is pending. This is not a general repeated-generation
 handoff, a tombstone protocol or a source-unavailable restore. It requires the
 retired guest to remain present. A separate phase-aware live observer and startup
 workflow must qualify OS/application writes before any denial is removed.
+
+## Known failed-guard preparation (developing)
+
+The `persistence_owner_reconcile` library prepares one specific forward
+transition: the original owner publisher staged all metadata, then its direct
+guard refused before any reference retirement. The original pair claim remains
+failed and immutable. Other failure phases are unsupported.
+
+Preparation accepts the exact original preparation/hash, a separately trusted
+hash of its six raw phase records and the pinned corrected guard1063. It requires
+the expected original runtime profile, exact claim membership, five absent later
+markers, unchanged source/owner/unit metadata and matching backup/attachment
+history. The existing pair mutex and both native read leases remain held while
+the stopped source's application lock and consistent SQL facts are checked.
+
+The corrected guard runs only in memory against the existing policy. Preparation
+closes source, parent history, controls and the original installed reference again
+after slow observations. It returns a canonical proposed reconciliation containing
+the original facts and a new reference path. It creates no new runtime profile,
+claim, owner or unit file and does not retire or start anything.
+
+The mutating controller, its journal/status boundary and native reconciliation
+are not implemented or qualified by this read-only component. A successful
+preparation is not permission to replay the original operation. Keep its failed
+journal and all four start denials. The initial bootstrap's legacy guard behavior
+also remains unchanged here; new production defaults require their own adoption
+and qualification before the developing workflow is released.

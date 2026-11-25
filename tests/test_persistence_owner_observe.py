@@ -19,6 +19,7 @@ from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
 import test_persistence_observe as fixtures
 
 HANDOFF_SHA = "68a40e2c9f696d5535085c94d4f55bc93d5b03644dfcbe254e0b5629403eb270"
+FIXED_HANDOFF_SHA = "1063b39ce19c688667c35f376adfa268e245be2b5758e0f4cb36593b336064e3"
 
 
 def owner_guest(stopped=True):
@@ -213,10 +214,21 @@ class OwnerObserverTests(unittest.TestCase):
     )
     def test_actual_owner_guard_load_and_request_contract(self):
         source = Path(os.environ["CMDMESH_HANDOFF_GUARD_SOURCE"]).absolute()
+        self.guard_request_contract(source, HANDOFF_SHA)
+
+    @unittest.skipUnless(
+        os.environ.get("CMDMESH_FIXED_HANDOFF_GUARD_SOURCE"),
+        "provide the pinned corrected owner guard",
+    )
+    def test_corrected_owner_guard_load_and_request_contract(self):
+        source = Path(os.environ["CMDMESH_FIXED_HANDOFF_GUARD_SOURCE"]).absolute()
+        self.guard_request_contract(source, FIXED_HANDOFF_SHA)
+
+    def guard_request_contract(self, source, trusted):
         path = self.fixture.root / "guard3.py"
         path.write_bytes(source.read_bytes())
         path.chmod(0o600)
-        guard = observe.load_guard({"path": str(path), "sha256": HANDOFF_SHA})
+        guard = observe.load_guard({"path": str(path), "sha256": trusted})
         policy = json.loads(
             (source.parent / "handoff-manifest.example.json").read_bytes()
         )
@@ -241,7 +253,7 @@ class OwnerObserverTests(unittest.TestCase):
                 "generation_tag": policy["generation_tag"],
             },
             "policy": policy,
-            "reference_guard": {"path": str(path), "sha256": HANDOFF_SHA},
+            "reference_guard": {"path": str(path), "sha256": trusted},
             "backup_store": {
                 "mountpoint": "/srv/backup",
                 "source": "192.0.2.20:/backup",
