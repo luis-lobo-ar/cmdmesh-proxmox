@@ -3,6 +3,8 @@
 The shared pre-start reader is a content-addressed, fixed public dependency, not
 an operator-supplied hook. Running observations never claim SQLite consistency.
 source_state holds the existing application's flock across a stopped operation.
+The schema-three owner guard is supported only while the guest is stopped and
+under its native configuration read lease. Running owner collection is refused.
 """
 
 from contextlib import contextmanager, nullcontext
@@ -25,6 +27,9 @@ from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
 
 REFERENCE_GUARD_SHA256 = (
     "8a96f2ce9fcfce64221263f3fee70b399449d5a66d2d6d938a493bcdcf9666e1"
+)
+HANDOFF_GUARD_SHA256 = (
+    "68a40e2c9f696d5535085c94d4f55bc93d5b03644dfcbe254e0b5629403eb270"
 )
 ENV = {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
 IDENTITY_SQL = "CREATE TABLE identity (instance_id TEXT NOT NULL)"
@@ -94,16 +99,19 @@ def read_regular(path, limit):
 
 def load_guard(reference):
     state.keys(reference, {"path", "sha256"})
-    require(reference["sha256"] == REFERENCE_GUARD_SHA256, "guard-unsupported")
+    require(
+        reference["sha256"] in (REFERENCE_GUARD_SHA256, HANDOFF_GUARD_SHA256),
+        "guard-unsupported",
+    )
     raw, info = read_regular(reference["path"], 65536)
     require(
         info.st_uid in {0, os.geteuid()}
         and not info.st_mode & 0o6022
-        and state.sha256(raw) == REFERENCE_GUARD_SHA256,
+        and state.sha256(raw) == reference["sha256"],
         "guard-changed",
     )
     namespace = {"__name__": "cmdmesh_reference_guard"}
-    exec(compile(raw, "<cmdmesh-reference-guard-v2>", "exec"), namespace)
+    exec(compile(raw, "<cmdmesh-pinned-reference-guard>", "exec"), namespace)
     return SimpleNamespace(**namespace)
 
 
@@ -288,7 +296,7 @@ def guest_facts(policy):
         and len({row["key"] for row in pending}) == len(pending),
         "guest-pending-observation",
     )
-    return {
+    result = {
         "config": config,
         "status": status.get("status"),
         # PVE returns rows in per-process Perl hash order. Preserve all values;
@@ -296,9 +304,32 @@ def guest_facts(policy):
         "pending": sorted(pending, key=lambda row: row["key"]),
         "ha_membership": any(row["sid"] == "ct:" + str(policy["vmid"]) for row in ha),
     }
+    if policy.get("schema_version") == 3:
+        result["runtime"] = {
+            "vmid": status.get("vmid"),
+            "pid": status.get("pid", 0),
+            "uptime": status.get("uptime"),
+        }
+    return result
 
 
 def validate_guest(policy, facts):
+    if policy.get("schema_version") == 3:
+        runtime = facts.get("runtime")
+        require(
+            type(runtime) is dict and set(runtime) == {"vmid", "pid", "uptime"},
+            "owner-runtime",
+        )
+        require(
+            all(type(runtime[key]) is int for key in runtime)
+            and runtime["vmid"] == policy["vmid"]
+            and 0 <= runtime["pid"] < 2**32
+            and 0 <= runtime["uptime"] < 2**64
+            and (
+                facts["status"] != "stopped" or runtime["pid"] == runtime["uptime"] == 0
+            ),
+            "owner-runtime",
+        )
     config = facts["config"]
     require(
         type(config) is dict
@@ -547,14 +578,41 @@ def locked_application(policy, guard):
 
 @contextmanager
 def source_state(request, require_stopped=False):
-    guard = load_guard(
+    reference = copy.deepcopy(
         request.get("reference_guard") if type(request) is dict else None
     )
+    guard = load_guard(reference)
     validate_request(request, guard)
     host = host_facts(request)
     policy = request["policy"]
+    # Lazy import avoids the existing configuration-lock reader's dependency on
+    # this module. Schema-two callers keep their existing admission behavior.
+    if policy.get("schema_version") == 3:
+        from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+            persistence_config_lock,
+        )
+
+        lease = persistence_config_lock.read_guest(policy["vmid"])
+    else:
+        lease = nullcontext()
+    with lease:
+        with _source_state(request, require_stopped, guard, host) as facts:
+            yield facts
+        require(request.get("reference_guard") == reference, "guard-reference-changed")
+        # Run after application SQL closure, while the owner read lease still
+        # excludes a managed guest start. Recheck bytes, never execute new code.
+        load_guard(reference)
+
+
+@contextmanager
+def _source_state(request, require_stopped, guard, host):
+    policy = request["policy"]
     guest = guest_facts(policy)
     validate_guest(policy, guest)  # Must precede any declared dataset/file read.
+    require(
+        policy.get("schema_version") != 3 or guest["status"] == "stopped",
+        "owner-running-observation-unsupported",
+    )
     require(not require_stopped or guest["status"] == "stopped", "source-not-stopped")
     guarded = guard.collect(policy)
     guard.validate(policy, guarded, policy["vmid"])
