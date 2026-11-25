@@ -161,6 +161,17 @@ native read lease through SQL and reference-file closure. Running successors are
 explicitly unsupported by this collector; see
 [stopped owner observation](docs/persistence-profile.md#stopped-successor-source-observation-developing).
 
+The developing [explicit kernel binding](docs/persistence-profile.md#explicit-kernel-evidence-developing)
+provides process, root-image, mapping and resource evidence independently of blank
+guest policy. It does not establish ownership, guest bind backing or application
+health. A separate retained-runtime collector must supply those checks.
+
+The developing `lxc_persistence_runtime` module supplies the
+[OS-running, application-quiesced inspection](docs/persistence-profile.md#running-os-with-a-quiesced-application-developing).
+It holds real pair/config/application locks and checks guest bind backing, image,
+owner, references and consistent SQL. It performs no lifecycle action. Native
+qualification and the later authenticated writer phase remain pending.
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,
