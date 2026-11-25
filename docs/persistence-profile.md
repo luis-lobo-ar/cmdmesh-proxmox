@@ -812,3 +812,53 @@ operation's pair/configuration leases and managed start denials, then receive an
 explicit successor observation. Preserve immutable original code and history.
 These local contracts do not publish owner records/guards, retire a legacy
 reference, start a guest/writer or qualify native ownership handoff.
+
+## Initial stopped owner publication (developing)
+
+`cmdmesh.proxmox.lxc_persistence_owner_publish` handles one initial schema-two to
+schema-three reference handoff. Its inputs are the exact completed attachment
+preparation, separately trusted preparation and completion hashes, and the pinned
+standalone owner guard. It derives the successor's actual root identity, generated
+configuration, retained dataset pair and original application facts. It preserves
+the old descriptor rather than rewriting historical evidence.
+
+Use `action: prepare`, retain its exact canonical result and hash, then use
+`action: publish` in check mode to repeat the admission. Neither creates an owner
+record, publication claim or unit file. Real publication requires
+`allow_changes: true`. `action: status` inspects the same completed publication;
+it cannot reconcile a partial attempt.
+
+Publication holds the backup-compatible pair mutex and both native configuration
+read leases. All four existing resetting false drop-ins remain unchanged. The
+replacement's two blank drop-ins are archived outside the unit directories before
+being replaced with owner-aware reference drop-ins. The fixed guard program,
+policy and private owner record are installed and the loaded false commands are
+checked. No native guest configuration or application data is written.
+
+The original stopped source context and its exclusive application-file lock close
+fully before the old installed guard is archived and replaced by an immediate
+refusal stub. A genuine stopped schema-three source context then checks the same
+application tuple. An old descriptor must fail the original code-hash check before
+host, SQL or backup work. Historical immutable guard code remains unchanged.
+After retirement, status uses the publication journal and new source descriptor;
+the old attachment status correctly refuses its retired reference.
+
+The durable claim is keyed by the retained dataset pair. Dispatch/result records,
+original guard archives, exact guard/policy bytes and the completion are retained.
+Completion binds their raw-byte hash map. Missing, modified or uncertain phase
+evidence refuses, as do changed owners, denial files, unit membership or native
+facts. Files are checked again after slow queries and completion publication.
+The application lock is never nested across old/new source contexts.
+
+On failure, preserve the claim, archives, owner and all denials. A partial attempt
+can leave only some new metadata, or an archived old guard without its stub. Do
+not retry, erase the claim, change IDs or start either guest. Diagnose the actual
+files and journal before a separately qualified reconciliation. A completion
+beside a failure marker is not success. No automatic rollback is attempted.
+
+`owner_publication_verified` means only that this stopped handoff passed its
+checks. `boot_verified`, `rebuild_verified` and `restore_verified` remain false.
+Native qualification is pending. This is not a general repeated-generation
+handoff, a tombstone protocol or a source-unavailable restore. It requires the
+retired guest to remain present. A separate phase-aware live observer and startup
+workflow must qualify OS/application writes before any denial is removed.
