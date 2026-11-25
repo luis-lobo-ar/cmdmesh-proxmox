@@ -561,23 +561,28 @@ def locked_application(policy, guard):
     with locked_config(
         config, mapping["offset"] + mapping["uid"], mapping["offset"] + mapping["gid"]
     ):
-        facts = guard.collect(policy)
-        guard.validate(policy, facts, policy["vmid"])
-        app = {
-            "instance_id": policy["application"]["instance_id"],
-            "config_sha256": policy["application"]["config_sha256"],
-            "mapping": dict(mapping),
-        }
-        database = Path(policy["datasets"]["data"]["mountpoint"]) / "ledger.sqlite3"
-        app.update(read_database(database, app["instance_id"]))
-        yield app
-        require(
-            read_database(database, app["instance_id"])
-            == {
-                k: app[k] for k in ("database_sha256", "records_sha256", "record_count")
-            },
-            "database-changed",
-        )
+        with _application_leased(policy, guard) as app:
+            yield app
+
+
+@contextmanager
+def _application_leased(policy, guard):
+    """Read SQL under the caller's actual configuration EX, without reacquiring it."""
+    facts = guard.collect(policy)
+    guard.validate(policy, facts, policy["vmid"])
+    app = {
+        "instance_id": policy["application"]["instance_id"],
+        "config_sha256": policy["application"]["config_sha256"],
+        "mapping": dict(policy["mapping"]),
+    }
+    database = Path(policy["datasets"]["data"]["mountpoint"]) / "ledger.sqlite3"
+    app.update(read_database(database, app["instance_id"]))
+    yield app
+    require(
+        read_database(database, app["instance_id"])
+        == {k: app[k] for k in ("database_sha256", "records_sha256", "record_count")},
+        "database-changed",
+    )
 
 
 @contextmanager
@@ -610,6 +615,36 @@ def source_state(request, require_stopped=False):
 
 @contextmanager
 def _source_state(request, require_stopped, guard, host):
+    with _source_state_worker(
+        request, require_stopped, guard, host, locked_application
+    ) as facts:
+        yield facts
+
+
+@contextmanager
+def _stopped_source_leased(request, guard, host, raw):
+    """Inspect a stopped owner under caller-held pair/native/application leases.
+
+    This internal worker cannot acquire, release or prove those leases. The
+    caller binds its actual application lock to ``raw`` and closes it afterward.
+    The public source observer continues to acquire its own leases.
+    """
+    policy = request["policy"]
+    require(
+        type(policy.get("schema_version")) is int and policy["schema_version"] == 3,
+        "owner-policy",
+    )
+    require(
+        type(raw) is bytes
+        and state.sha256(raw) == policy["application"]["config_sha256"],
+        "configuration-changed",
+    )
+    with _source_state_worker(request, True, guard, host, _application_leased) as facts:
+        yield facts
+
+
+@contextmanager
+def _source_state_worker(request, require_stopped, guard, host, application_context):
     policy = request["policy"]
     guest = guest_facts(policy)
     validate_guest(policy, guest)  # Must precede any declared dataset/file read.
@@ -622,7 +657,7 @@ def _source_state(request, require_stopped, guard, host):
     guard.validate(policy, guarded, policy["vmid"])
     store = mount_facts(request["backup_store"])
     stopped = guest["status"] == "stopped"
-    with locked_application(policy, guard) if stopped else nullcontext(None) as app:
+    with application_context(policy, guard) if stopped else nullcontext(None) as app:
         yield {
             "schema_version": 1,
             "source": request.get("source"),

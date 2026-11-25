@@ -194,6 +194,11 @@ stale predecessors and preserves incomplete attempts across controller restarts.
 This component writes metadata only. Native shutdown/resume integration and its
 infrastructure qualification remain in development.
 
+Internal lifecycle workers can inspect a stopped owner under locks they already
+hold. The [stopped worker contract](docs/persistence-profile.md#caller-leased-stopped-inspection-developing)
+keeps the running-guest rejection before retained data reads. Public observation
+continues to acquire its own locks.
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,
