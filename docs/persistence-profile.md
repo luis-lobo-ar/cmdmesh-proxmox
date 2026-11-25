@@ -776,8 +776,9 @@ is still pending.
 
 ## Stopped successor source observation (developing)
 
-The source observer accepts two content-addressed standalone guards: legacy
-schema-two `8a96f2ce...` and owner-aware schema-three `68a40e2c...`. The selected
+The source observer accepts three content-addressed standalone guards: legacy
+schema-two `8a96f2ce...`, owner-aware schema-three `68a40e2c...`, and corrected
+schema-three `1063b39c...`. The selected
 program's validator enforces its policy schema. Unsupported hashes or changed
 bytes refuse before execution; an operator cannot supply an arbitrary hook.
 The existing request, host identity, guest isolation, exact bind layout, backup
@@ -812,6 +813,15 @@ operation's pair/configuration leases and managed start denials, then receive an
 explicit successor observation. Preserve immutable original code and history.
 These local contracts do not publish owner records/guards, retire a legacy
 reference, start a guest/writer or qualify native ownership handoff.
+
+The corrected guard records either the explicit storage configuration or its
+observed absence when Proxmox uses default local storage. It does not create the
+file. The parent identity and file presence are checked through a held directory
+descriptor, with full file sealing when present. Schema-three still requires the
+same owner/retirement facts, stopped-state gate, native lease and SQL closure.
+Admitting this known program hash does not reconcile an earlier failed operation
+or authorize overwriting its files. CI retains separate immutable old and fixed
+guard fixtures, so both contracts remain exercised.
 
 ## Initial stopped owner publication (developing)
 
@@ -862,3 +872,46 @@ Native qualification is pending. This is not a general repeated-generation
 handoff, a tombstone protocol or a source-unavailable restore. It requires the
 retired guest to remain present. A separate phase-aware live observer and startup
 workflow must qualify OS/application writes before any denial is removed.
+
+## Known failed-guard reconciliation (developing)
+
+The `persistence_owner_reconcile` library admits one specific forward
+transition: the original owner publisher staged all metadata, then its direct
+guard refused before any reference retirement. The original pair claim remains
+failed and immutable. Other failure phases are unsupported.
+
+Preparation accepts the exact original preparation/hash, a separately trusted
+hash of its six raw phase records and the pinned corrected guard1063. It requires
+the expected original runtime profile, exact claim membership, five absent later
+markers, unchanged source/owner/unit metadata and matching backup/attachment
+history. The existing pair mutex and both native read leases remain held while
+the stopped source's application lock and consistent SQL facts are checked.
+
+The corrected guard runs only in memory against the existing policy. Preparation
+closes source, parent history, controls and the original installed reference again
+after slow observations. It returns a canonical proposed reconciliation containing
+the original facts and a new reference path. It creates no new runtime profile,
+claim, owner or unit file and does not retire or start anything.
+
+`lxc_persistence_owner_reconcile` exposes `prepare`, `reconcile` and `status`.
+Check mode reobserves the exact preparation without creating files. Execution
+also requires `allow_changes: true`. It consumes a new permanent GUID-pair claim,
+stores the corrected guard and policy there, and archives both previous target
+references before replacing them. The owner record and all four start denials
+remain unchanged. The old failed journal stays in its original directory.
+
+The controller validates the installed observer's support and records the direct
+guard result before retiring the legacy reference. Guard refusals, timeouts and
+process-spawn failures produce bounded results without private exception text.
+It closes the original source/application lock before retirement and observes
+the stopped successor through the new schema-three descriptor. Completion and
+status verify the new profile, phase records, archives, old failure records,
+current controls and original application facts. Status uses the new descriptor;
+it does not replay the failed publisher or call its historical current-state checks.
+
+A partial reconciliation retains its new claim and failure marker. Do not replay
+either operation, remove a denial or infer success from a completion beside a
+failure marker. No automatic rollback is attempted. The verified result covers
+metadata only; boot, rebuild and restore remain false. Native reconciliation is
+not yet qualified. The initial bootstrap's legacy guard behavior remains unchanged
+here; fresh defaults require their own corrected-guard qualification before release.

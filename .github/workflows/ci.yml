@@ -34,6 +34,12 @@ jobs:
           ref: '20185910c39c3cd795f75ad225cc77006658cfad'
           path: .generated/reference-recipes
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: luis-lobo-ar/cmdmesh-recipes
+          ref: '0259c02a1d54eac8330c8e03abf60146383d7b72'
+          path: .generated/fixed-reference-recipes
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca
         with:
           toolchain: '1.92.0'
@@ -70,6 +76,7 @@ jobs:
           CMDMESH_AGE_KEYGEN: ${{ github.workspace }}/.generated/age/bin/age-keygen
           CMDMESH_REFERENCE_GUARD_SOURCE: ${{ github.workspace }}/.generated/reference-recipes/examples/reference-ledger/prestart_guard.py
           CMDMESH_HANDOFF_GUARD_SOURCE: ${{ github.workspace }}/.generated/reference-recipes/examples/reference-ledger/handoff_guard.py
+          CMDMESH_FIXED_HANDOFF_GUARD_SOURCE: ${{ github.workspace }}/.generated/fixed-reference-recipes/examples/reference-ledger/handoff_guard.py
       - name: All role syntax checks
         run: python tools/check-ansible.py
       - name: Basic role lint

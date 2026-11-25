@@ -174,6 +174,13 @@ old reference while all four starts remain denied. Preparation and check mode
 are read-only. It does not activate an application; see
 [stopped ownership handoff](docs/persistence-profile.md#initial-stopped-owner-publication-developing).
 
+For the specific pre-retirement guard-refusal stage, the developing
+`lxc_persistence_owner_reconcile` module uses a new claim and corrected guard.
+It preserves the failed journal, owner and every start denial. Preparation and
+check mode are read-only; execution requires explicit changes permission.
+Other failure stages and guest activation are unsupported. See
+[known failed-guard reconciliation](docs/persistence-profile.md#known-failed-guard-reconciliation-developing).
+
 The developing `lxc_persistence_blank_boot` module consumes a separately trusted
 successful stage, publishes pinned pre-start checks and submits one isolated OS
 start. It verifies actual kernel/guest readiness and keeps application/recovery
