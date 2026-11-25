@@ -145,6 +145,12 @@ native config. It never starts the guest or attaches retained data. Check mode,
 one-use writes and read-only status share the same preparation contract. Native
 qualification remains pending; see [the stage and guard limits](docs/persistence-profile.md#denied-configuration-generation-developing).
 
+The developing `lxc_persistence_blank_boot` module consumes a separately trusted
+successful stage, publishes pinned pre-start checks and submits one isolated OS
+start. It verifies actual kernel/guest readiness and keeps application/recovery
+claims false. Check and status never start or republish. Native qualification is
+pending; see [the blank OS boundary](docs/persistence-profile.md#one-blank-os-start-developing).
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
