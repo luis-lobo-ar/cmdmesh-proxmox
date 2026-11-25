@@ -1217,3 +1217,37 @@ safe preparation hashes remain exact. Failure reports possible effects for an
 allowed boot and clears every verified flag. Preserve consumed claims and partial
 journals rather than retrying an uncertain start. Native normal-executor
 qualification remains pending.
+
+## Claimed application-test preparation (developing)
+
+`persistence_writer_trial.prepare(boot_raw, boot_sha256,
+boot_completion_sha256, nonce)` prepares the later retained application test.
+It requires the canonical accepted OS-start preparation, its separately trusted
+hash, the trusted completed-start hash and a predeclared 32-character hexadecimal
+nonce. The future test value is a fixed reference marker derived from that nonce.
+Preparation creates no runtime directory or claim and performs no service action.
+
+The function finishes the original OS status check before acquiring its own pair
+EX and both native SH scopes. It takes the real application EX for consistent SQL
+and retains it through closing history reads and a second quiesced observation.
+Original credentials, records, image and controls must still match the accepted
+start. All raw parent journals, the completed boot journal and its runtime profile
+are included in the immutable history. Missing, unexpected or changed records
+refuse. Existing claims and unknown or symbolic runtime paths refuse reuse.
+
+The prepared runtime identity excludes changing uptime. Its floor comes from the
+immutable completed-start document; each fresh observation must remain at or
+above that floor and increase monotonically within the observation. This keeps
+prepared bytes stable when only uptime increases. A later APPLY must still repeat
+preparation and compare its exact canonical bytes before creating a claim.
+
+`decode_prepared(raw, trusted_sha256)` is a pure loader. It validates the complete
+parent relationship, required history membership, profile, completed-start hash,
+original application tuple and uptime floor. A matching self-hash alone does not
+authorize an action or establish current runtime state.
+
+The claimed start, one append, read-back, containment stop and new stopped SQL
+checkpoint are not implemented by this preparation component. Neither preparation
+nor a successful active read qualifies application rebuild or independent restore.
+After an intentional append, later status must use its own new application
+checkpoint rather than the original OS status bound to the old record tuple.
