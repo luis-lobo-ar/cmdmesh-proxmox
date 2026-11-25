@@ -1081,6 +1081,12 @@ bytes are verified, and a second runtime observation closes changes during that
 write. Final file and directory checks also bind the new runtime profile. No
 automatic rollback, repeat POST, or claim deletion is performed.
 
+The result's `journal_files` maps each claimed record to its native path, raw-byte
+hash, and file identity. Its canonical hash is `phase_journal_sha256`. A consumer
+can recompute that digest and compare separately captured raw bytes with every
+recorded hash. Status requires the recorded descriptor to match fresh native
+metadata. The descriptor contains no credential contents.
+
 `status(prepared_bytes, trusted_sha256)` requalifies an existing completed start.
 It checks journal semantics, hashes, task state, application facts, and current
 runtime. Only typed nondecreasing uptime can differ from the completed frame.

@@ -205,6 +205,15 @@ class BootExecutionTests(unittest.TestCase):
         )
         self.assertEqual(self.old_files(), self.before_old)
         self.assertFalse((boot.claim_path(self.request) / "failed.json").exists())
+        self.assertEqual(
+            boot.state.sha256(boot.state.canonical(result["journal_files"])),
+            result["phase_journal_sha256"],
+        )
+        for name, info in result["journal_files"].items():
+            self.assertEqual(
+                info["sha256"],
+                boot.state.sha256((boot.claim_path(self.request) / name).read_bytes()),
+            )
         for index in range(2):
             self.assertEqual(
                 (
@@ -496,6 +505,20 @@ class BootExecutionTests(unittest.TestCase):
         with mock.patch.object(boot.backup, "read_private", side_effect=changed):
             with self.assertRaises(ValueError):
                 boot.status(self.raw, self.sha)
+        self.assertEqual(self.posts, 1)
+
+    def test_status_refuses_a_forged_journal_descriptor_with_a_matching_digest(self):
+        self.run_boot()
+        self.fixture.events.clear()
+        path = boot.claim_path(self.request) / "complete.json"
+        completed, _ = boot.backup.read_private(path)
+        completed["journal_files"]["dispatch.json"]["identity"][1] += 1
+        completed["phase_journal_sha256"] = boot.state.sha256(
+            boot.state.canonical(completed["journal_files"])
+        )
+        path.write_bytes(boot.state.canonical(completed))
+        with self.assertRaisesRegex(ValueError, "journal"):
+            boot.status(self.raw, self.sha)
         self.assertEqual(self.posts, 1)
 
 

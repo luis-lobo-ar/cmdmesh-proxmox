@@ -616,6 +616,7 @@ def boot(raw, trusted, *, timeout_seconds=240):
                     "task": task,
                     "log": log,
                     "native_outcome": outcome,
+                    "journal_files": journal_files,
                     "phase_journal_sha256": journal,
                     "mutation_attempted": True,
                     "boot_verified": True,
@@ -753,6 +754,7 @@ def status(raw, trusted):
             "task",
             "log",
             "native_outcome",
+            "journal_files",
             "phase_journal_sha256",
             "mutation_attempted",
             "boot_verified",
@@ -806,6 +808,7 @@ def status(raw, trusted):
         )
         close_retained_history(prepared)
         journal_files = journal_snapshot(directory, complete=True)
+        _same(journal_files, completed["journal_files"], "journal-descriptor-changed")
         require(
             state.sha256(state.canonical(journal_files))
             == completed["phase_journal_sha256"],
