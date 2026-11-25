@@ -155,6 +155,12 @@ Retained-source controllers can use the separate
 without supplying a blank-guest policy. The native writer must run after its
 target read lease has closed.
 
+The source observer also accepts the pinned schema-three owner guard for a
+stopped successor. It checks owner/retirement facts and holds the successor's
+native read lease through SQL and reference-file closure. Running successors are
+explicitly unsupported by this collector; see
+[stopped owner observation](docs/persistence-profile.md#stopped-successor-source-observation-developing).
+
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts
 for both guests, uses three digest-checked native updates to disable protection,

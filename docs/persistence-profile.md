@@ -773,3 +773,42 @@ observer: normal operating-system and database writes change timestamps and data
 Live verification needs an explicit phase-aware observer and never substitutes
 metadata checks for consistent SQL observations. Native attachment qualification
 is still pending.
+
+## Stopped successor source observation (developing)
+
+The source observer accepts two content-addressed standalone guards: legacy
+schema-two `8a96f2ce...` and owner-aware schema-three `68a40e2c...`. The selected
+program's validator enforces its policy schema. Unsupported hashes or changed
+bytes refuse before execution; an operator cannot supply an arbitrary hook.
+The existing request, host identity, guest isolation, exact bind layout, backup
+mount and application-file/SQL consistency checks remain in force.
+
+Schema-three observations require the successor to be stopped even for ordinary
+inspection. The observer holds its existing native shared configuration lease
+through collection, caller work, application SQL closure and the final guard-file
+recheck. Managed native starts/writes cannot overlap that interval. A missing or
+busy lock refuses without initialization. The early stopped-state gate precedes
+the strict guard collector, backup-mount collection and application reads.
+Its guest facts retain the native VM ID, PID and uptime. They must be integers
+with the exact selected VM ID; a stopped source requires PID0 and uptime0.
+A stopped label with a foreign ID, nonzero runtime or boolean counters refuses.
+Legacy schema-two observation fields remain unchanged.
+
+The owner guard validates the active owner record and both retired managed start
+denials. Missing/mismatched ownership is a refusal, not permission to select an
+older descriptor. A successful stopped observation may report consistent SQL
+facts under the application lock; it does not claim a completed backup or restore.
+
+Running schema-three collection is deliberately unsupported here. Its strict
+pre-start collector seals timestamps and database metadata that normal operating
+system and application writes change. A separate phase-aware running observer
+must qualify those permitted changes before startup workflows use it. Never
+remove drift checks or reuse the retired guest's source identity to hide them.
+
+Both schemas re-read the pinned reference bytes after application closure. A
+changed reference or program prevents success. An intentional installed legacy
+reference retirement must occur outside its old observation context, under the
+operation's pair/configuration leases and managed start denials, then receive an
+explicit successor observation. Preserve immutable original code and history.
+These local contracts do not publish owner records/guards, retire a legacy
+reference, start a guest/writer or qualify native ownership handoff.
