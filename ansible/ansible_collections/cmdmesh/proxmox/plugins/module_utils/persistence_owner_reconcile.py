@@ -1,7 +1,7 @@
-"""Admission/builders for one known pre-retirement owner-guard refusal.
+"""Reconcile one known pre-retirement owner-guard refusal under a new claim.
 
-These functions do not resume the original controller or write any metadata.
-Live parent, source and history validation remain required before publication.
+Preparation is read-only. Apply preserves the failed journal and every start
+denial, then publishes the corrected stopped reference without replaying its parent.
 """
 
 import copy
@@ -17,6 +17,7 @@ from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_state as state,
 )
 
+ROOT_UID = 0
 RUNTIME_ROOT = Path("/var/lib/cmdmesh/reference-owner-reconciliation")
 GUARD_SHA = observe.FIXED_HANDOFF_GUARD_SHA256
 PREPARED = "cmdmesh.proxmox.persistence.prepared-owner-reconciliation"
@@ -124,14 +125,16 @@ def validate_failure_records(parent, trusted, records):
     return state.sha256(state.canonical(checksums)), stage
 
 
+def runtime_profile():
+    backup.private_directory(RUNTIME_ROOT)
+    info, raw = original.file_info(RUNTIME_ROOT / "profile.json")
+    require(raw == state.canonical(PROFILE), "runtime-profile")
+    return info
+
+
 def unused(parent):
     if os.path.lexists(RUNTIME_ROOT):
-        backup.private_directory(RUNTIME_ROOT)
-        require(
-            backup.read_private(RUNTIME_ROOT / "profile.json")[1]
-            == state.canonical(PROFILE),
-            "runtime-profile",
-        )
+        runtime_profile()
     require(not os.path.lexists(claim_path(parent)), "pair-consumed")
 
 
@@ -207,6 +210,10 @@ def probe_candidate(parent, guard_raw):
         "--vmid",
         str(parent["policy"]["vmid"]),
     ]
+    return execute_guard(argv)
+
+
+def execute_guard(argv):
     try:
         result = subprocess.run(
             argv,
@@ -224,6 +231,18 @@ def probe_candidate(parent, guard_raw):
             "stdout_sha256": state.sha256(error.stdout or b""),
             "stderr_bytes": len(error.stderr or b""),
             "stderr_sha256": state.sha256(error.stderr or b""),
+        }
+    except OSError as error:
+        return {
+            "exit_code": None,
+            "payload": {
+                "outcome": "refused",
+                "reason": "execution-unavailable",
+                "errno": error.errno,
+            },
+            "stdout_sha256": state.sha256(b""),
+            "stderr_bytes": 0,
+            "stderr_sha256": state.sha256(b""),
         }
     payload = {"outcome": "refused", "reason": "unqualified-output"}
     if len(out) <= 65536:
@@ -317,3 +336,461 @@ def prepare(parent_raw, parent_sha, failure_sha, guard_raw):
         "parent_stage": current,
         "candidate_probe": command,
     }
+
+
+def decode_prepared(raw, trusted):
+    state.digest(trusted)
+    require(
+        type(raw) is bytes and 0 < len(raw) <= 4194304 and state.sha256(raw) == trusted,
+        "prepared-changed",
+    )
+    value = observe.decode(raw)
+    state.keys(
+        value,
+        {
+            "document_type",
+            "schema_version",
+            "parent_prepared",
+            "parent_prepared_sha256",
+            "parent_failure_sha256",
+            "guard_sha256",
+            "source_request",
+            "source_before",
+            "parent_stage",
+            "candidate_probe",
+        },
+    )
+    require(
+        raw == state.canonical(value)
+        and value["document_type"] == PREPARED
+        and type(value["schema_version"]) is int
+        and value["schema_version"] == 1
+        and value["guard_sha256"] == GUARD_SHA,
+        "prepared-version",
+    )
+    return value
+
+
+def load_prepared(raw, trusted, guard):
+    value = decode_prepared(raw, trusted)
+    parent, old_guard = load_parent(
+        state.canonical(value["parent_prepared"]), value["parent_prepared_sha256"]
+    )
+    stage = parent_history(
+        parent, value["parent_prepared_sha256"], value["parent_failure_sha256"]
+    )
+    require(
+        state.canonical(stage) == state.canonical(value["parent_stage"])
+        and state.canonical(source_from(parent, guard))
+        == state.canonical(value["source_request"]),
+        "prepared-parent-changed",
+    )
+    require(
+        state.sha256(state.canonical(value["source_before"]))
+        == parent["original_source_sha256"]
+        and value["source_before"]["application"] == parent["original_application"],
+        "prepared-source-changed",
+    )
+    require_qualified(value["candidate_probe"])
+    return value, old_guard
+
+
+def guard_argv(prepared):
+    directory = claim_path(prepared["parent_prepared"])
+    return [
+        "/usr/bin/python3",
+        "-I",
+        "-S",
+        "-B",
+        str(directory / "guard.py"),
+        "--manifest",
+        str(directory / "policy.json"),
+        "--vmid",
+        str(prepared["source_request"]["policy"]["vmid"]),
+    ]
+
+
+def dropin_body(prepared):
+    argv = guard_argv(prepared)
+    return ("[Service]\nExecStartPre=" + " ".join([*argv[:-1], "%i"]) + "\n").encode()
+
+
+def run_guard(prepared):
+    return execute_guard(guard_argv(prepared))
+
+
+def create_claim(prepared, trusted):
+    backup.private_directory(RUNTIME_ROOT.parent)
+    try:
+        RUNTIME_ROOT.mkdir(mode=0o700)
+    except FileExistsError:
+        backup.private_directory(RUNTIME_ROOT)
+        require(
+            backup.read_private(RUNTIME_ROOT / "profile.json")[1]
+            == state.canonical(PROFILE),
+            "runtime-profile",
+        )
+    else:
+        backup.write_private(RUNTIME_ROOT / "profile.json", PROFILE)
+        backup.sync_directory(RUNTIME_ROOT.parent)
+    directory = claim_path(prepared["parent_prepared"])
+    directory.mkdir(mode=0o700)
+    backup.sync_directory(RUNTIME_ROOT)
+    backup.write_private(
+        directory / "intent.json", {"prepared": prepared, "prepared_sha256": trusted}
+    )
+    backup.write_private(
+        directory / "write-possible.json", {"pair_key": directory.name}
+    )
+    return directory
+
+
+def stage(prepared, guard_raw, directory):
+    parent = prepared["parent_prepared"]
+    request = request_of(parent)
+    backup.write_private(
+        directory / "stage-dispatch.json",
+        {
+            "guard_sha256": GUARD_SHA,
+            "parent_failure_sha256": prepared["parent_failure_sha256"],
+        },
+    )
+    original.write_raw(directory / "guard.py", guard_raw)
+    backup.write_private(directory / "policy.json", parent["policy"])
+    for index, unit in enumerate(original.attach.unit_names(request["target"]["vmid"])):
+        target = original.attach.UNIT_ROOT / (unit + ".d") / "50-cmdmesh-reference.conf"
+        expected = prepared["parent_stage"]["controls"][unit]["files"][target.name]
+        require(original.file_info(target)[0] == expected, "target-reference-changed")
+        pending = directory / ("replacement-target-" + str(index) + ".conf")
+        archive = directory / ("previous-target-" + str(index) + ".conf")
+        original.write_raw(pending, dropin_body(prepared))
+        backup.write_private(
+            directory / ("target-" + str(index) + "-dispatch.json"),
+            {"previous": expected, "next_sha256": state.sha256(dropin_body(prepared))},
+        )
+        require(original.file_info(target)[0] == expected, "target-reference-changed")
+        os.rename(target, archive)
+        backup.sync_directory(target.parent)
+        backup.sync_directory(directory)
+        archived = original.file_info(archive)[0]
+        require(
+            archived["sha256"] == expected["sha256"]
+            and archived["identity"][:8] == expected["identity"][:8],
+            "target-archive-changed",
+        )
+        require(not os.path.lexists(target), "target-reference-raced")
+        os.rename(pending, target)
+        backup.sync_directory(target.parent)
+        backup.sync_directory(directory)
+        backup.write_private(
+            directory / ("target-" + str(index) + "-result.json"),
+            {"archive": archived, "current": original.file_info(target)[0]},
+        )
+    original.reload_units()
+
+
+def parent_artifacts(prepared):
+    parent = prepared["parent_prepared"]
+    require(
+        parent_history(
+            parent,
+            prepared["parent_prepared_sha256"],
+            prepared["parent_failure_sha256"],
+        )
+        == prepared["parent_stage"],
+        "parent-history-changed",
+    )
+    original.retained_history(parent)
+    for path, expected in prepared["parent_stage"]["files"].items():
+        require(
+            original.file_info(Path(path))[0] == expected, "parent-artifact-changed"
+        )
+
+
+def current_files(prepared, guard, *, retired=True):
+    profile = runtime_profile()
+    parent = prepared["parent_prepared"]
+    request = request_of(parent)
+    directory = claim_path(parent)
+    owner = str(guard.owner_path(parent["policy"]))
+    expected = {
+        str(directory / "guard.py"): GUARD_SHA,
+        str(directory / "policy.json"): state.sha256(state.canonical(parent["policy"])),
+        owner: prepared["parent_stage"]["files"][owner]["sha256"],
+    }
+    files = {profile["path"]: profile}
+    for path, checksum in expected.items():
+        info = original.file_info(Path(path))[0]
+        require(info["sha256"] == checksum, "current-file-changed")
+        files[path] = info
+    require(files[owner] == prepared["parent_stage"]["files"][owner], "owner-changed")
+    controls = original.controls(request, published=True)
+    source = request["source_request"]["policy"]["vmid"]
+    for vmid in (source, request["target"]["vmid"]):
+        for unit in original.attach.unit_names(vmid):
+            actual = controls[unit]["files"]
+            before = prepared["parent_stage"]["controls"][unit]["files"]
+            require(
+                actual[original.attach.DENIAL_NAME]
+                == before[original.attach.DENIAL_NAME],
+                "denial-changed",
+            )
+            if vmid == source:
+                require(
+                    actual["50-cmdmesh-reference.conf"]
+                    == before["50-cmdmesh-reference.conf"],
+                    "source-dropin-changed",
+                )
+            else:
+                require(
+                    actual["50-cmdmesh-reference.conf"]["sha256"]
+                    == state.sha256(dropin_body(prepared)),
+                    "target-dropin-changed",
+                )
+    for index, unit in enumerate(original.attach.unit_names(request["target"]["vmid"])):
+        path = directory / ("previous-target-" + str(index) + ".conf")
+        archived = original.file_info(path)[0]
+        old = prepared["parent_stage"]["controls"][unit]["files"][
+            "50-cmdmesh-reference.conf"
+        ]
+        require(
+            archived["sha256"] == old["sha256"]
+            and archived["identity"][:8] == old["identity"][:8],
+            "target-archive-changed",
+        )
+        files[str(path)] = archived
+    legacy = Path(parent["legacy_reference"]["path"])
+    if retired:
+        stub, raw = original.file_info(legacy)
+        archive = original.file_info(directory / "legacy-guard.py", private=False)[0]
+        require(
+            raw == original.RETIRED_STUB
+            and archive["sha256"] == parent["legacy_reference"]["sha256"]
+            and archive["identity"][:8] == parent["legacy_reference"]["identity"][:8],
+            "legacy-retirement-changed",
+        )
+        files.update({str(legacy): stub, str(directory / "legacy-guard.py"): archive})
+    else:
+        require(
+            original.file_info(legacy, private=False)[0] == parent["legacy_reference"],
+            "legacy-changed",
+        )
+    require(
+        original.current_target(parent["attachment_prepared"])
+        == parent["attachment"]["target"]
+        and original.current_generated(request) == parent["attachment"]["generated"],
+        "target-changed",
+    )
+    current = {"files": files, "controls": controls}
+    parent_artifacts(prepared)
+    original.seal_publication(directory, current)
+    if not retired:
+        require(
+            original.file_info(legacy, private=False)[0] == parent["legacy_reference"],
+            "legacy-changed",
+        )
+    return current
+
+
+def phase_journal(prepared, trusted, guard, current, directory):
+    profile = runtime_profile()
+    require(profile == current["files"][profile["path"]], "runtime-profile-changed")
+    parent = prepared["parent_prepared"]
+    require(not os.path.lexists(directory / "failed.json"), "failed-or-uncertain")
+    expected = {
+        "intent.json": {"prepared": prepared, "prepared_sha256": trusted},
+        "write-possible.json": {"pair_key": directory.name},
+        "stage-dispatch.json": {
+            "guard_sha256": GUARD_SHA,
+            "parent_failure_sha256": prepared["parent_failure_sha256"],
+        },
+        "guard-dispatch.json": {"argv": guard_argv(prepared)},
+        "retire-dispatch.json": parent["legacy_reference"],
+    }
+    request = request_of(parent)
+    for index, unit in enumerate(original.attach.unit_names(request["target"]["vmid"])):
+        before = prepared["parent_stage"]["controls"][unit]["files"][
+            "50-cmdmesh-reference.conf"
+        ]
+        expected["target-" + str(index) + "-dispatch.json"] = {
+            "previous": before,
+            "next_sha256": state.sha256(dropin_body(prepared)),
+        }
+        expected["target-" + str(index) + "-result.json"] = {
+            "archive": current["files"][
+                str(directory / ("previous-target-" + str(index) + ".conf"))
+            ],
+            "current": current["controls"][unit]["files"]["50-cmdmesh-reference.conf"],
+        }
+    expected["retire-result.json"] = {
+        "stub": current["files"][parent["legacy_reference"]["path"]],
+        "archive": current["files"][str(directory / "legacy-guard.py")],
+    }
+    hashes = {}
+    for name, value in expected.items():
+        actual, raw = backup.read_private(directory / name)
+        require(
+            raw == state.canonical(actual) == state.canonical(value), "journal-changed"
+        )
+        hashes[name] = state.sha256(raw)
+    command, raw = backup.read_private(directory / "guard-result.json")
+    require_qualified(command)
+    require(raw == state.canonical(command), "journal-changed")
+    hashes["guard-result.json"] = state.sha256(raw)
+    for name in (
+        "guard.py",
+        "policy.json",
+        "previous-target-0.conf",
+        "previous-target-1.conf",
+        "legacy-guard.py",
+    ):
+        info = original.file_info(directory / name, private=name != "legacy-guard.py")[
+            0
+        ]
+        require(info == current["files"][str(directory / name)], "journal-file-changed")
+        hashes[name] = info["sha256"]
+    parent_artifacts(prepared)
+    require(runtime_profile() == profile, "runtime-profile-changed")
+    original.seal_publication(directory, current)
+    return state.sha256(state.canonical(hashes))
+
+
+def result_document(prepared, trusted, source, current, journal_sha):
+    return {
+        "prepared_sha256": trusted,
+        "parent_failure_sha256": prepared["parent_failure_sha256"],
+        "phase": "owner-reconciled-starts-denied",
+        "source_request": prepared["source_request"],
+        "source_observed": source,
+        "publication": current,
+        "phase_journal_sha256": journal_sha,
+        "owner_reconciliation_verified": True,
+        "owner_publication_verified": True,
+        "legacy_source_refused": True,
+        **original.FLAGS,
+    }
+
+
+def apply(raw, trusted, guard_raw):
+    decode_prepared(raw, trusted)
+    guard = load_guard_source(guard_raw)
+    prepared, old_guard = load_prepared(raw, trusted, guard)
+    parent = prepared["parent_prepared"]
+    request = request_of(parent)
+    require(os.geteuid() == ROOT_UID, "root-required")
+    unused(parent)
+    require(
+        state.canonical(
+            prepare(
+                state.canonical(parent),
+                prepared["parent_prepared_sha256"],
+                prepared["parent_failure_sha256"],
+                guard_raw,
+            )
+        )
+        == raw,
+        "preflight-changed",
+    )
+    directory = None
+    try:
+        with original.leases(request):
+            unused(parent)
+            with observe.source_state(
+                request["source_request"], require_stopped=True
+            ) as before:
+                require(
+                    state.canonical(before)
+                    == state.canonical(prepared["source_before"]),
+                    "source-changed",
+                )
+                require(
+                    current_parent(
+                        parent,
+                        prepared["parent_prepared_sha256"],
+                        prepared["parent_failure_sha256"],
+                        old_guard,
+                    )
+                    == prepared["parent_stage"],
+                    "parent-stage-changed",
+                )
+                directory = create_claim(prepared, trusted)
+                stage(prepared, guard_raw, directory)
+                current_files(prepared, guard, retired=False)
+                installed = observe.load_guard(
+                    prepared["source_request"]["reference_guard"]
+                )
+                observe.validate_request(prepared["source_request"], installed)
+                backup.write_private(
+                    directory / "guard-dispatch.json", {"argv": guard_argv(prepared)}
+                )
+                command = run_guard(prepared)
+                backup.write_private(directory / "guard-result.json", command)
+                require_qualified(command)
+            original.retire(parent, directory)
+            original.old_source_refused(request)
+            with observe.source_state(
+                prepared["source_request"], require_stopped=True
+            ) as successor:
+                require(
+                    successor["application"] == parent["original_application"],
+                    "application-changed",
+                )
+                source = copy.deepcopy(successor)
+            current = current_files(prepared, guard)
+            journal_sha = phase_journal(prepared, trusted, guard, current, directory)
+            result = result_document(prepared, trusted, source, current, journal_sha)
+            checksum = backup.write_private(directory / "complete.json", result)
+            require(
+                current_files(prepared, guard) == current
+                and phase_journal(prepared, trusted, guard, current, directory)
+                == journal_sha,
+                "completion-changed",
+            )
+        return {**result, "completion_sha256": checksum}
+    except BaseException as error:
+        if directory is not None:
+            try:
+                backup.write_private(
+                    directory / "failed.json",
+                    {
+                        "error_code": getattr(
+                            error, "code", "persistence-owner-reconcile-interrupted"
+                        )
+                    },
+                )
+            except OSError:
+                pass
+        raise
+
+
+def status(raw, trusted):
+    preliminary = decode_prepared(raw, trusted)
+    runtime_profile()
+    directory = claim_path(preliminary["parent_prepared"])
+    backup.private_directory(directory)
+    intent, _ = backup.read_private(directory / "intent.json")
+    require(
+        intent == {"prepared": preliminary, "prepared_sha256": trusted},
+        "retained-intent",
+    )
+    guard = load_guard_source(original.file_info(directory / "guard.py")[1])
+    prepared, _ = load_prepared(raw, trusted, guard)
+    parent = prepared["parent_prepared"]
+    require(not os.path.lexists(directory / "failed.json"), "failed-or-uncertain")
+    _, complete_raw = backup.read_private(directory / "complete.json")
+    request = request_of(parent)
+    with original.leases(request):
+        original.old_source_refused(request)
+        with observe.source_state(
+            prepared["source_request"], require_stopped=True
+        ) as successor:
+            require(
+                successor["application"] == parent["original_application"],
+                "application-changed",
+            )
+            source = copy.deepcopy(successor)
+        current = current_files(prepared, guard)
+        journal_sha = phase_journal(prepared, trusted, guard, current, directory)
+        result = result_document(prepared, trusted, source, current, journal_sha)
+        require(state.canonical(result) == complete_raw, "completion-changed")
+    return {**result, "completion_sha256": state.sha256(complete_raw)}

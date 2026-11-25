@@ -1,6 +1,7 @@
 """Forward work admits only the preserved pre-retirement guard-refusal stage."""
 
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -161,6 +162,23 @@ class ForwardPreparationTests(unittest.TestCase):
             self.model.raw, self.model.sha, self.checksum, self.model.guard_raw
         )
 
+    def test_prepared_source_rejects_boolean_and_float_integer_fields(self):
+        for field, replacement in (
+            ("schema_version", True),
+            ("count", True),
+            ("count", 1.0),
+        ):
+            prepared = self.prepare()
+            if field == "schema_version":
+                prepared["source_request"][field] = replacement
+            else:
+                prepared["source_request"]["policy"]["cpu_policy"][field] = replacement
+            raw = state.canonical(prepared)
+            with self.subTest(field=field, replacement=replacement), self.assertRaises(
+                state.PersistenceError
+            ):
+                reconcile.load_prepared(raw, state.sha256(raw), self.model.guard)
+
     def test_preparation_keeps_parent_owner_denials_and_creates_no_reconciliation_files(
         self,
     ):
@@ -249,3 +267,225 @@ class ForwardPreparationTests(unittest.TestCase):
         with self.assertRaises(state.PersistenceError):
             self.prepare()
         reconcile.probe_candidate.assert_not_called()
+
+
+@unittest.skipUnless(
+    os.environ.get("CMDMESH_HANDOFF_GUARD_SOURCE")
+    and os.environ.get("CMDMESH_FIXED_HANDOFF_GUARD_SOURCE"),
+    "provide both pinned standalone guards",
+)
+class ForwardPublicationTests(unittest.TestCase):
+    def setUp(self):
+        self.base = ForwardPreparationTests("runTest")
+        self.base.setUp()
+        self.addCleanup(self.base.doCleanups)
+        self.fixture = self.base.fixture
+        self.prepared = self.base.prepare()
+        self.raw = state.canonical(self.prepared)
+        self.sha = state.sha256(self.raw)
+        self.old_bytes = {
+            path.name: path.read_bytes() for path in self.base.model.directory.iterdir()
+        }
+        for patch in (
+            mock.patch.object(reconcile, "ROOT_UID", os.geteuid()),
+            mock.patch.object(reconcile, "run_guard", side_effect=self.run_guard),
+        ):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def run_guard(self, *args):
+        self.fixture.assert_both_leased()
+        self.assertTrue(self.fixture.app_locked)
+        self.fixture.events.append("fixed-guard")
+        return self.base.probe()
+
+    def test_forward_publication_preserves_parent_owner_denials_and_lock_order(self):
+        owner = self.fixture.guard.owner_path(self.base.model.parent["policy"])
+        owner_before = original.file_info(owner)[0]
+        self.fixture.events.clear()
+        result = reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        self.assertTrue(
+            result["owner_reconciliation_verified"]
+            and result["owner_publication_verified"]
+            and result["legacy_source_refused"]
+        )
+        self.assertFalse(any(result[key] for key in original.FLAGS))
+        self.assertEqual(self.fixture.legacy.read_bytes(), original.RETIRED_STUB)
+        self.assertEqual(owner_before, original.file_info(owner)[0])
+        self.assertEqual(
+            self.old_bytes,
+            {
+                path.name: path.read_bytes()
+                for path in self.base.model.directory.iterdir()
+            },
+        )
+        self.assertIn("fixed-guard", self.fixture.events)
+        self.assertEqual(
+            self.fixture.events[self.fixture.events.index("enter3") - 1], "close2"
+        )
+        for control in self.fixture.controls().values():
+            self.assertIn(original.attach.DENIAL_NAME, control["files"])
+        observed = reconcile.status(self.raw, self.sha)
+        self.assertEqual(result["completion_sha256"], observed["completion_sha256"])
+        with self.assertRaises(state.PersistenceError):
+            reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+
+    def test_refused_guard_result_is_retained_before_failure_and_legacy_is_not_retired(
+        self,
+    ):
+        before = self.fixture.legacy.read_bytes()
+        result = {
+            **self.prepared["candidate_probe"],
+            "exit_code": 1,
+            "payload": {"outcome": "refused", "reason": "fixture-refusal"},
+        }
+        with mock.patch.object(reconcile, "run_guard", return_value=result):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        self.assertEqual(
+            json.loads((directory / "guard-result.json").read_bytes()), result
+        )
+        self.assertTrue((directory / "failed.json").exists())
+        self.assertEqual(self.fixture.legacy.read_bytes(), before)
+        self.assertEqual(
+            self.old_bytes,
+            {
+                path.name: path.read_bytes()
+                for path in self.base.model.directory.iterdir()
+            },
+        )
+        with self.assertRaises(state.PersistenceError):
+            reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+
+    def test_installed_reference_loader_refusal_precedes_legacy_retirement(self):
+        before = self.fixture.legacy.read_bytes()
+        with mock.patch.object(
+            reconcile.observe,
+            "load_guard",
+            side_effect=state.PersistenceError("persistence-guard-unsupported"),
+        ):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        self.assertEqual(self.fixture.legacy.read_bytes(), before)
+        self.assertFalse(any(reconcile.RUNTIME_ROOT.rglob("retire-dispatch.json")))
+
+    def test_input_hash_refusal_precedes_all_filesystem_access(self):
+        with mock.patch.object(reconcile, "load_parent") as parent, mock.patch.object(
+            original, "file_info"
+        ) as file:
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, "f" * 64, self.base.model.guard_raw)
+        parent.assert_not_called()
+        file.assert_not_called()
+
+    def test_source_two_exit_error_keeps_legacy_reference_and_failed_claim(self):
+        source = reconcile.observe.source_state
+        before = self.fixture.legacy.read_bytes()
+
+        @contextmanager
+        def observed(request, **kwargs):
+            with source(request, **kwargs) as value:
+                yield value
+            if (
+                request["policy"]["schema_version"] == 2
+                and reconcile.claim_path(self.base.model.parent).exists()
+            ):
+                raise state.PersistenceError("source-two-exit-failed")
+
+        with mock.patch.object(reconcile.observe, "source_state", side_effect=observed):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        self.assertEqual(self.fixture.legacy.read_bytes(), before)
+        self.assertTrue(
+            (reconcile.claim_path(self.base.model.parent) / "failed.json").exists()
+        )
+
+    def test_owner_change_during_final_native_query_refuses_before_completion(self):
+        generated = original.current_generated
+
+        def queried(request):
+            value = generated(request)
+            if self.fixture.legacy.read_bytes() == original.RETIRED_STUB:
+                self.fixture.guard.owner_path(
+                    self.base.model.parent["policy"]
+                ).write_bytes(b"{}")
+            return value
+
+        with mock.patch.object(original, "current_generated", side_effect=queried):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        self.assertTrue((directory / "failed.json").exists())
+        self.assertFalse((directory / "complete.json").exists())
+
+    def test_late_journal_damage_retains_complete_and_failed_but_never_success(self):
+        write = reconcile.backup.write_private
+
+        def written(path, value):
+            result = write(path, value)
+            if path.name == "complete.json":
+                (path.parent / "guard-result.json").write_bytes(b"{}")
+            return result
+
+        with mock.patch.object(reconcile.backup, "write_private", side_effect=written):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        self.assertTrue((directory / "complete.json").exists())
+        self.assertTrue((directory / "failed.json").exists())
+        with self.assertRaises(state.PersistenceError):
+            reconcile.status(self.raw, self.sha)
+        with self.assertRaises(state.PersistenceError):
+            reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+
+    def test_missing_target_result_cannot_be_a_completed_status(self):
+        reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        (directory / "target-1-result.json").unlink()
+        with self.assertRaises((state.PersistenceError, OSError)):
+            reconcile.status(self.raw, self.sha)
+
+    def test_changed_reconciliation_runtime_profile_refuses_completed_status(self):
+        reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        (reconcile.RUNTIME_ROOT / "profile.json").write_bytes(b"{}")
+        with self.assertRaises(state.PersistenceError):
+            reconcile.status(self.raw, self.sha)
+
+    def test_runtime_profile_change_during_completion_cannot_succeed(self):
+        write = reconcile.backup.write_private
+
+        def written(path, value):
+            result = write(path, value)
+            if path.name == "complete.json":
+                (reconcile.RUNTIME_ROOT / "profile.json").write_bytes(b"{}")
+            return result
+
+        with mock.patch.object(reconcile.backup, "write_private", side_effect=written):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        self.assertTrue((directory / "failed.json").exists())
+
+    def test_guard_spawn_error_is_recorded_without_private_exception_text(self):
+        import errno
+
+        before = self.fixture.legacy.read_bytes()
+        with mock.patch.object(
+            reconcile,
+            "run_guard",
+            side_effect=lambda prepared: reconcile.execute_guard(["/usr/bin/python3"]),
+        ), mock.patch.object(
+            reconcile.subprocess,
+            "run",
+            side_effect=OSError(errno.EAGAIN, "PRIVATE_SENTINEL"),
+        ):
+            with self.assertRaises(state.PersistenceError):
+                reconcile.apply(self.raw, self.sha, self.base.model.guard_raw)
+        directory = reconcile.claim_path(self.base.model.parent)
+        result = json.loads((directory / "guard-result.json").read_bytes())
+        self.assertIsNone(result["exit_code"])
+        self.assertEqual(result["payload"]["errno"], errno.EAGAIN)
+        self.assertNotIn("PRIVATE_", json.dumps(result))
+        self.assertEqual(self.fixture.legacy.read_bytes(), before)
+        self.assertTrue((directory / "failed.json").exists())
