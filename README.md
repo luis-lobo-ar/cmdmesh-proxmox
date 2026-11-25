@@ -139,6 +139,12 @@ network-isolated replacement rootfs while preserving the original reference
 source. It deliberately omits retained binds during template extraction and does
 not start or initialize an application. See the [recipient contract](docs/persistence-profile.md#stopped-rebuild-recipient).
 
+The developing `lxc_persistence_blank_stage` module prepares that fresh guest for
+later OS bootstrap by denying both managed start paths and generating its stopped
+native config. It never starts the guest or attaches retained data. Check mode,
+one-use writes and read-only status share the same preparation contract. Native
+qualification remains pending; see [the stage and guard limits](docs/persistence-profile.md#denied-configuration-generation-developing).
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
