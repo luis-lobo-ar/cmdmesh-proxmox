@@ -128,8 +128,7 @@ def collect_bindings(binding, evidence, datasets):
                 selected_mounts(
                     kernel.reader.memory.read_text(process / "mountinfo"), datasets
                 )
-                == table
-                and kernel.reader.memory.init_state(init["pid"]) == identity,
+                == table,
                 "bind-state-changed",
             )
             for descriptor, host, before in bound.values():
@@ -142,6 +141,9 @@ def collect_bindings(binding, evidence, datasets):
             require(
                 os.fstat(root).st_dev == os.makedev(*evidence["rootfs"]["device"]),
                 "root-device-changed",
+            )
+            require(
+                kernel.reader.memory.init_state(init["pid"]) == identity, "init-changed"
             )
     except OSError:
         raise state.PersistenceError(

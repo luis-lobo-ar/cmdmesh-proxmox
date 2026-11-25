@@ -157,3 +157,25 @@ class RetainedBindTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 runtime.collect_bindings(self.binding, self.kernel, self.datasets)
+
+    def test_init_change_during_last_root_fd_check_refuses(self):
+        previous = runtime.os.fstat
+        state = {"reads": 0, "birth": 500}
+
+        def fstat(fd):
+            value = previous(fd)
+            if not hasattr(value, "st_ino"):
+                state["reads"] += 1
+                if state["reads"] == 2:
+                    state["birth"] = 501
+            return value
+
+        with mock.patch.object(
+            runtime.os, "fstat", side_effect=fstat
+        ), mock.patch.object(
+            runtime.kernel.reader.memory,
+            "init_state",
+            side_effect=lambda pid: (state["birth"], 20),
+        ):
+            with self.assertRaises(ValueError):
+                runtime.collect_bindings(self.binding, self.kernel, self.datasets)

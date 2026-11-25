@@ -900,7 +900,8 @@ mount per expected path, with the correct dataset source, filesystem root and
 device. It opens each guest path relative to the admitted init process's root,
 refuses symlinks, and compares the open directory's device/inode with the host
 retained directory. It repeats the selected mount, process and directory checks
-before closing its descriptors. Unrelated mount-table changes are excluded.
+before closing its descriptors. Process identity is checked after the last root
+descriptor check. Unrelated mount-table changes are excluded.
 
 These primitives create no files and execute no guest command. The caller must
 validate actual dataset GUIDs/ownership and hold native configuration leases.
