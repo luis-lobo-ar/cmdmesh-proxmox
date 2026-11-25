@@ -1467,6 +1467,47 @@ enforce the ordered operation journal, externally trusted predecessor and native
 dispatch contract. OS shutdown/resume, reboot and recovery qualification remain
 separate.
 
+### Ansible current-owner entry point (developing)
+
+`cmdmesh.proxmox.lxc_persistence_owner_current` reconstructs authority through
+`load_writer_checkpoint` before collecting current state. Supply these inputs:
+
+| Input | Required value |
+| --- | --- |
+| `prepared_json`, `prepared_sha256` | Original canonical writer preparation and its externally trusted hash. |
+| `completion_json`, `completion_sha256` | Original canonical successful SDK completion and its externally trusted hash. |
+| `journal` | Exactly 13 original filenames mapped to raw canonical JSON strings, including `complete.json`. |
+| `phase` | `os_quiesced` or `stopped`. Defaults to `os_quiesced`. |
+| `prior_runtime` | Optional externally accepted last running frame for prior-init fencing. |
+
+Do not parse and serialize journal values to create these strings. Preserve the
+original raw bytes and their hashes. A failed target's candidate completion is
+not a substitute for successful controller output.
+
+```yaml
+- name: Inspect current retained data without starting or stopping the guest
+  cmdmesh.proxmox.lxc_persistence_owner_current:
+    prepared_json: "{{ accepted_writer_preparation_json }}"
+    prepared_sha256: "{{ trusted_writer_preparation_sha256 }}"
+    completion_json: "{{ accepted_writer_completion_json }}"
+    completion_sha256: "{{ trusted_writer_completion_sha256 }}"
+    journal: "{{ accepted_writer_raw_journal }}"
+    phase: os_quiesced
+  register: owner
+```
+
+Normal and check mode perform the same read-only collection. A successful
+result contains `owner_current_verified=True`, `application_quiesced=True`, a
+canonical `result_json`, its `result_sha256` and the validated
+`checkpoint_sha256`. `guest_image_verified` is false for stopped guests.
+`changed` and all mutation, boot, rebuild, backup and restore flags stay false.
+
+The module bounds inputs and output, hides its invocation values and emits
+static failure messages. It exposes no mutation permission or lifecycle action.
+An accepted current observation does not resolve an uncertain operation or
+advance the ordered owner journal. Packaged-module refusal and privacy tests
+qualify this boundary separately from managed-infrastructure acceptance.
+
 ### Ordered owner journal (developing)
 
 `persistence_owner_journal` is an internal filesystem component for workflow
