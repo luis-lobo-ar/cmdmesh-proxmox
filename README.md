@@ -168,6 +168,12 @@ add the binds and restore protection, and leaves all starts denied. A partial
 failure retains its claim and needs reconciliation. It does not prove a working
 rebuild or restore. See [stopped attachment](docs/persistence-profile.md#stopped-retained-attachment-developing).
 
+The initial owner-publication module builds on that exact completed attachment.
+It archives the blank guards, installs the successor policy/owner and retires the
+old reference while all four starts remain denied. Preparation and check mode
+are read-only. It does not activate an application; see
+[stopped ownership handoff](docs/persistence-profile.md#initial-stopped-owner-publication-developing).
+
 The developing `lxc_persistence_blank_boot` module consumes a separately trusted
 successful stage, publishes pinned pre-start checks and submits one isolated OS
 start. It verifies actual kernel/guest readiness and keeps application/recovery
