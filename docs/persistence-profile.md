@@ -1062,9 +1062,10 @@ It finishes another stopped-source context before taking the real application
 configuration EX. The application EX and pair EX remain held through startup and
 verification. The direct guard result is durable before qualification or refusal.
 
-The controller archives and fsyncs only the current target's two exact99 denial
-files, then removes those two files. It preserves the retired guest's denials and
-both guests'50 references, the owner record, policies, and prior journals. It
+The controller archives and fsyncs only the current target's two
+`99-cmdmesh-retired-prestart.conf` files, then removes those files. It preserves
+the retired guest's denials and both guests' `50-cmdmesh-reference.conf` files,
+the owner record, policies, and prior journals. It
 checks the loaded target declaration before dispatch. Every target native SH
 lease is closed before POST and task polling. The retired native SH remains held.
 The controller reacquires target SH after terminal native success and inspects
@@ -1087,7 +1088,25 @@ It creates no files, takes no lifecycle action, and never calls a stopped observ
 after startup. Failed or uncertain claims refuse successful status. Keep their
 evidence for a separate reconciliation rather than rerunning `boot`.
 
-These are library interfaces under development. Native startup, the Ansible
-boundary, and the normal executor trial still require qualification. Local tests
+These interfaces are under development. Native startup and the normal executor
+trial still require qualification. Local tests
 use real private files, locks, SQLite, and modeled native providers. They do not
 establish disaster recovery or production readiness.
+
+### Ansible startup boundary
+
+`lxc_persistence_retained_boot` exposes `prepare`, `boot`, and `status`. The
+preparation inputs are the canonical reconciliation document, its trusted hash,
+the trusted completion and Source3 hashes, and `image_profile`. Boot and status
+take only the canonical startup preparation and its separately trusted hash.
+Use `ansible-doc cmdmesh.proxmox.lxc_persistence_retained_boot` for the complete
+argument reference and read-only examples.
+
+An actual boot requires `allow_changes: true`. In check mode, boot repeats the
+exact preparation and reports a proposed change without creating a claim,
+removing a denial, dispatching a task, or claiming runtime success. Status remains
+read-only in either mode. Input invocation and unexpected exceptions are withheld;
+safe preparation hashes remain exact. Failure reports possible effects for an
+allowed boot and clears every verified flag. Preserve consumed claims and partial
+journals rather than retrying an uncertain start. Native normal-executor
+qualification remains pending.
