@@ -894,6 +894,19 @@ admit ownership, hold native configuration leases, and verify guest bind mounts
 and application state. Kernel evidence alone does not establish those facts or
 qualify boot, rebuild or recovery. Native retained-runtime qualification is pending.
 
+`persistence_retained_runtime.collect_bindings(binding, kernel, datasets)` checks
+the running guest's data and configuration paths. It requires one writable ZFS
+mount per expected path, with the correct dataset source, filesystem root and
+device. It opens each guest path relative to the admitted init process's root,
+refuses symlinks, and compares the open directory's device/inode with the host
+retained directory. It repeats the selected mount, process and directory checks
+before closing its descriptors. Unrelated mount-table changes are excluded.
+
+These primitives create no files and execute no guest command. The caller must
+validate actual dataset GUIDs/ownership and hold native configuration leases.
+The full phase-aware collector and application-quiescence proof remain developing;
+the bind helper alone does not qualify boot, application health or restore.
+
 ## Known failed-guard reconciliation (developing)
 
 The `persistence_owner_reconcile` library admits one specific forward
