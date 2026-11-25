@@ -46,8 +46,33 @@ class RuntimeDriverTests(unittest.TestCase):
     def test_unsupported_phase_refuses_before_collector(self):
         with mock.patch.object(self.driver.runtime, "collect") as collect:
             with self.assertRaises(ValueError):
-                self.driver.execute({}, {}, phase="active_writer")
+                self.driver.execute({}, {}, phase="unknown_phase")
         collect.assert_not_called()
+
+    def test_active_phase_routes_to_authenticated_read_only_collector(self):
+        observed = {
+            "os_runtime_verified": True,
+            "application_quiesced": False,
+            "application_read_verified": True,
+        }
+        with mock.patch.object(
+            self.driver.active, "collect", return_value=observed
+        ) as collect, mock.patch.object(
+            self.driver.runtime,
+            "collect",
+            side_effect=AssertionError("no EX/SQL collector"),
+        ):
+            for check in (False, True):
+                value = self.driver.execute(
+                    {}, {}, phase="active_writer", check_mode=check
+                )
+                self.assertTrue(value["application_read_verified"])
+                self.assertFalse(value["application_quiesced"])
+                self.assertFalse(value["changed"])
+                self.assertTrue(
+                    all(value[key] is False for key in self.driver.runtime.FLAGS)
+                )
+        self.assertEqual(collect.call_count, 2)
 
     def test_error_payload_is_static_and_has_no_mutation_or_health_claim(self):
         for error in (
@@ -77,14 +102,17 @@ root=Path(sys.argv[1]);sys.path.insert(0,str(root/'ansible'))
 basic._ANSIBLE_PROFILE='legacy';basic._ANSIBLE_ARGS=sys.stdin.buffer.read()
 spec=importlib.util.spec_from_file_location('actual',root/'ansible/ansible_collections/cmdmesh/proxmox/plugins/modules/lxc_persistence_runtime.py')
 d=importlib.util.module_from_spec(spec);spec.loader.exec_module(d)
-if sys.argv[2]=='error':
+if sys.argv[2] in ('error','active-error'):
  def failed(*args,**kwargs):raise RuntimeError('PRIVATE_RUNTIME_SENTINEL')
  d.runtime.collect=failed
-else:d.runtime.collect=lambda source,profile,**kw:{'safe_hash':source['trusted_hash'],'os_runtime_verified':True,'application_quiesced':True}
+ d.active.collect=failed
+else:
+ d.runtime.collect=lambda source,profile,**kw:{'safe_hash':source['trusted_hash'],'os_runtime_verified':True,'application_quiesced':True}
+ if sys.argv[2]=='active':d.active.collect=lambda source,profile:{'safe_hash':source['trusted_hash'],'os_runtime_verified':True,'application_quiesced':False,'application_read_verified':True}
 d.main()
 """
         (ROOT / ".generated").mkdir(mode=0o700, exist_ok=True)
-        for mode in ("success", "error", "phase"):
+        for mode in ("success", "error", "phase", "active", "active-error"):
             body = {
                 "ANSIBLE_MODULE_ARGS": {
                     "source_request": {
@@ -92,7 +120,15 @@ d.main()
                         "raw": "PRIVATE_INPUT_SENTINEL",
                     },
                     "image_profile": {"raw": "PRIVATE_PROGRAM_SENTINEL"},
-                    "phase": "active_writer" if mode == "phase" else "os_quiesced",
+                    "phase": (
+                        "unknown_phase"
+                        if mode == "phase"
+                        else (
+                            "active_writer"
+                            if mode.startswith("active")
+                            else "os_quiesced"
+                        )
+                    ),
                     "_ansible_debug": True,
                 }
             }
@@ -111,9 +147,11 @@ d.main()
                     },
                 )
             value = json.loads(result.stdout)
-            self.assertEqual(result.returncode, 0 if mode == "success" else 1)
+            self.assertEqual(
+                result.returncode, 0 if mode in ("success", "active") else 1
+            )
             self.assertNotIn(
                 "PRIVATE_", result.stdout.decode() + result.stderr.decode()
             )
-            if mode == "success":
+            if mode in ("success", "active"):
                 self.assertEqual(value["observed"]["safe_hash"], "a" * 64)

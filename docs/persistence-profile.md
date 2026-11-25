@@ -931,7 +931,9 @@ profile has these exact fields:
 
 Only guard1063 and image helper21bd are executable inputs. The profile supports
 the reference Ubuntu/amd64, local2GiB, memory512MiB, oneCPU/no-swap configuration.
-Unknown sources, unsupported profiles and `active_writer` refuse before collection.
+Unknown sources and unsupported profiles refuse before collection. The direct
+quiesced collector rejects `active_writer`. The Ansible boundary dispatches that
+phase to the separate active observer described below.
 
 The collector admits the host and API identity before retained-file access or
 guest execution. It holds the existing retained-pair EX mutex and both old/current
@@ -1038,6 +1040,105 @@ to the CLI or MCP interface. Controllers still own durable dispatch claims,
 configuration lock handoff, runtime checks, and uncertainty after a lost reply.
 Transport tests establish neither native start nor application recovery.
 
+## Local process authentication (developing)
+
+`unix_peer` performs one bounded AF_UNIX request to an admitted Linux process.
+The caller supplies an admitted socket-directory FD and `ProcessIdentity`.
+The process identity includes PID, birth time, PID and mount namespaces, numeric
+credentials, namespace PID mapping, root, executable, arguments and cgroup.
+This identity is evidence about a process. The caller must still verify its
+host, guest, service, program, retained mounts and socket-directory backing.
+
+`exchange` opens a pidfd and a process-directory FD. It requires a private
+directory and socket, then checks actual `SO_PEERCRED` before calling the
+credential supplier. It repeats process and socket checks before sending and
+after receiving. An exec or process exit invalidates the exchange. Supplier
+exceptions return a static error without private exception text.
+
+The protocol permits one newline-terminated request and one response. Request
+size, response size and total network duration are bounded. The client never
+retries. A lost or invalid response after sending leaves the operation outcome
+unknown. A caller must retain its dispatch claim and reconcile that outcome.
+The client cannot make an application write and its completion record atomic.
+
+`persistence_ledger_api` uses this transport for the reference application's
+authenticated read and idempotent append. It reads the original configuration
+through a caller-admitted directory FD after peer admission. It verifies the
+configuration hash, identity, permissions and file identity again after the
+response. The token remains inside the process and is excluded from results.
+The client takes no application EX lock and reads no host SQLite state.
+Read results include a records hash compatible with the stopped SQL observer.
+Invalid, uncertain or conflicting responses refuse without automatic retries.
+The decoded response must not contain the original token, including a token
+encoded with JSON escapes. Such a response refuses without returning its data.
+
+The existing image validator and guest probe accept an explicit `writer_pid`
+for the later active-writer controller. This requires an active, running unit
+with exactly that MainPID and exactly that UID/GID process. All artifact,
+account, mapping, environment and disabled-at-startup checks still apply.
+The default quiesced collector supplies no writer PID and still refuses active
+frames. An active image frame alone does not qualify a socket peer or rebuild.
+
+Local tests use real AF_UNIX processes, a real exec, actual peer credentials and
+the pinned reference application. They prove protocol and error behavior only.
+There is no active-writer lifecycle command or native rebuild acceptance yet.
+The reference application must remain stopped until its separate lifecycle
+controller, process admission, claims and stopping behavior are qualified.
+
+## Active-writer observation (developing)
+
+`lxc_persistence_runtime` accepts `phase: active_writer` for an already running
+reference service. It never starts or enables the service. Check mode performs
+the same observations. The matching library is
+`persistence_writer_runtime.collect(request, image_profile)`.
+
+The observer holds the existing pair EX and both native guest SH leases. It
+verifies current host/API/kernel, the retired owner and its denials, target
+references, ZFS GUIDs, mount sources, directory permissions and actual guest
+bind backing. The active image must still use the disabled service, known
+program and account baseline. Exactly one application UID/GID process is allowed.
+
+The socket peer must match the guest service's MainPID through the supported
+two-level namespace PID mapping. Its birth, PID and mount namespaces, root,
+mapped credentials, Python executable, arguments and systemd cgroup must match
+the admitted guest and service. Guest-root file access uses held directory FDs
+and no-follow directory traversal. The supported Python symlink is a relative
+`python3.<minor>` name inside the admitted `usr/bin` directory. Program bytes
+must match the qualified reference program.
+
+The held configuration and data directories must match their actual retained
+host directories. The named run directory and its private socket must still
+match the client endpoint. An actual FLOCK WRITE record and the peer's matching
+locked FD are required. `/proc/locks` alone retains the acquisition PID after
+an inherited descriptor transfer, so it cannot establish the current holder.
+The observer checks `fdinfo` and FD-backed file identity without opening or
+duplicating the actor's open file description.
+
+Each authenticated request repeats the full active frame before and after use.
+Only nondecreasing uptime and legitimate data-directory timestamp and size
+changes are excluded from equality. Directory backing, numeric ownership,
+permissions, service identity and the configuration file remain fixed.
+Closing file checks precede a final fast process check. A client refuses use
+after its lease context closes. No application EX or host database bytes,
+SQLite header or SQL are read while the actor runs.
+
+Results contain the authenticated instance identity, record count and records
+hash. They omit record values and credentials. `application_read_verified`
+describes this read; `application_quiesced` is false. All lifecycle, mutation,
+rebuild, restore and backup flags remain false. A successful read does not
+qualify write acceptance or application rebuild.
+
+Internal lifecycle code can use `_session_leased` while retaining the real pair
+EX and both native SH scopes. Its explicit append method is unavailable through
+the read-only Ansible boundary. A lifecycle controller must own a permanent
+dispatch claim before calling it. After sending, failures are unknown outcomes,
+not permission to replay. No native writer lifecycle has been qualified yet.
+
+Local tests separate modeled native/process admission from real directory,
+program, socket and lock observations. They reproduce endpoint replacement,
+late process changes and inherited-descriptor errors. Native activation and the
+claimed write/read-back/stop/SQL sequence remain separate acceptance work.
+
 ## Retained OS startup controller (developing)
 
 `persistence_retained_boot` prepares and controls one OS-only start after the
@@ -1116,3 +1217,101 @@ safe preparation hashes remain exact. Failure reports possible effects for an
 allowed boot and clears every verified flag. Preserve consumed claims and partial
 journals rather than retrying an uncertain start. Native normal-executor
 qualification remains pending.
+
+## Claimed application-test preparation (developing)
+
+`persistence_writer_trial.prepare(boot_raw, boot_sha256,
+boot_completion_sha256, nonce)` prepares the later retained application test.
+It requires the canonical accepted OS-start preparation, its separately trusted
+hash, the trusted completed-start hash and a predeclared 32-character hexadecimal
+nonce. The future test value is a fixed reference marker derived from that nonce.
+Preparation creates no runtime directory or claim and performs no service action.
+
+The function finishes the original OS status check before acquiring its own pair
+EX and both native SH scopes. It takes the real application EX for consistent SQL
+and retains it through closing history reads and a second quiesced observation.
+Original credentials, records, image and controls must still match the accepted
+start. All raw parent journals, the completed boot journal and its runtime profile
+are included in the immutable history. Missing, unexpected or changed records
+refuse. Existing claims and unknown or symbolic runtime paths refuse reuse.
+
+The prepared runtime identity excludes changing uptime. Its floor comes from the
+immutable completed-start document; each fresh observation must remain at or
+above that floor and increase monotonically within the observation. This keeps
+prepared bytes stable when only uptime increases. A later APPLY must still repeat
+preparation and compare its exact canonical bytes before creating a claim.
+
+`decode_prepared(raw, trusted_sha256)` is a pure loader. It validates the complete
+parent relationship, required history membership, profile, completed-start hash,
+original application tuple and uptime floor. A matching self-hash alone does not
+authorize an action or establish current runtime state.
+
+Preparation does not perform the claimed lifecycle described below. Neither
+preparation nor a successful active read qualifies application rebuild or
+independent restore. After an intentional append, later status uses its new
+application checkpoint rather than the original OS status bound to the old tuple.
+
+## Claimed application lifecycle (developing)
+
+`lxc_persistence_writer_trial` exposes `prepare`, `run` and `status` for the fixed
+reference application. The SDK execution functions are
+`persistence_writer_execution.preflight(raw, trusted_sha256)`, `run(raw,
+trusted_sha256)` and `status(raw, trusted_sha256, completion_sha256)`.
+See `ansible-doc cmdmesh.proxmox.lxc_persistence_writer_trial` for arguments.
+These are component-qualified interfaces. A native trial remains required.
+
+An actual run requires `allow_changes: true`. Check mode performs the same fresh
+read-only preflight, compares exact canonical preparation bytes and reports a
+proposed change. It creates no runtime directory or claim and sends no start,
+application request or stop. A consumed claim refuses another run or preflight.
+Use read-only status with the trusted successful receipt instead of replaying it.
+
+The allowed lifecycle performs these steps:
+
+1. Take the pair EX and both native SH leases. Recheck the original quiesced SQL
+   tuple under the real application EX and create a permanent GUID-pair claim.
+2. Close application EX, then journal and attempt one fixed service start. The
+   service remains disabled for automatic startup. Missing-socket readiness can
+   repeat read-only admission within a bounded deadline. It never repeats start
+   or retries an application request.
+3. Authenticate with the original credential and require the exact prior record
+   hash/count. The declared nonce must be absent. Journal one append dispatch and
+   require `committed` with the previous maximum sequence plus one. `unchanged`
+   does not qualify this first attempt.
+4. Read back exactly the old rows plus the declared nonce and fixed marker.
+   Close the active session. Freshly admit the owned service's root, program,
+   current MainPID and birth before one separately journaled stop.
+5. After stop, admit host/API/kernel before configuration access. Take real
+   application EX for inactive/no-writer and SQL proof. Require the same original
+   credential, original data plus the new record and compatible runtime state.
+6. Write the candidate completion and check raw parent/current journals and
+   profiles while EX remains held. Repeat the actual SQL/runtime worker after all
+   slow content reads. Only fast metadata/membership closure follows it, including
+   the private claim-directory identity and completion file.
+
+Pair/native leases span the full operation. Application EX never overlaps the
+live writer. No old stopped-source observation or old boot status runs after the
+intentional append. Original source controls, parent claims, credentials and
+unrelated services are preserved. The new record remains in the database.
+
+An uncertain start, write or stop consumes the claim. Following a possible start,
+failure handling can attempt one independently admitted containment stop without
+requiring successful API authentication. It refuses a replaced/unadmitted actor
+and never sends another stop after stop dispatch. It preserves the original
+failure, possible write and available evidence. Containment never creates normal
+success or removes the test record. A failed/uncertain result cannot be retried
+using another request ID or nonce.
+
+Successful status takes the separately trusted completion hash returned to the
+controller. Do not derive that trust from a candidate file on a failed target.
+Status checks the new stopped tuple, complete journal contract and raw historical
+boot records. It performs no lifecycle action. A failed or containment journal
+refuses. A candidate `complete.json` alone does not establish successful execution;
+a closing failure can leave that file without a returned accepted receipt.
+
+Results omit credentials and row values. `application_write_verified` and
+`rebuild_verified` require the complete successful sequence. `boot_verified`,
+`restore_verified` and `backup_verified` remain false for this operation.
+Unknown failures clear verified flags at the Ansible boundary, suppress private
+exception text and retain possible effects for an allowed run. Independent
+source-unavailable restore and native application qualification remain separate.

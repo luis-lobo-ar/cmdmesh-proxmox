@@ -48,6 +48,12 @@ if hashlib.sha256(source.encode()).hexdigest()!='21bd1353bc6c95f4e4e4b94010c16c5
 ns={'__name__':'cmdmesh_runtime_image'}
 exec(compile(source,'<cmdmesh-runtime-image>','exec'),ns)
 h=SimpleNamespace(**ns)
+h.require(len(sys.argv) in (2,3))
+writer=None if len(sys.argv)==2 else int(sys.argv[2])
+h.require(writer is None or 1<writer<2**31)
+def processes(accounts):
+ if writer is None:h.validate_no_writer(accounts)
+ else:h.require(accounts['home_exists'] is False and accounts['uid_processes']==accounts['gid_processes']==[writer])
 def identity(info):return [info.st_dev,info.st_ino,info.st_mode,info.st_uid,info.st_gid,info.st_nlink,info.st_size,info.st_mtime_ns,info.st_ctime_ns]
 def guest():return {'hostname':socket.gethostname(),'root_device':os.stat('/').st_dev,'affinity':sorted(os.sched_getaffinity(0))}
 def directories():
@@ -61,10 +67,10 @@ def artifacts():
   raw,info=h.regular(name,65536);result[name]={'sha256':hashlib.sha256(raw).hexdigest(),'identity':list(info)}
  return result
 environment=h.environment();h.validate_environment(environment)
-unit=h.unit();child=h.read_as_application();accounts=h.accounts();h.validate_no_writer(accounts)
+unit=h.unit();child=h.read_as_application();accounts=h.accounts();processes(accounts)
 files=artifacts();dirs=directories();who=guest()
 if h.environment()!=environment or h.unit()!=unit or h.account_files()!=accounts['files']:raise ValueError('guest-image-changed')
-closing_accounts=h.accounts();h.validate_no_writer(closing_accounts)
+closing_accounts=h.accounts();processes(closing_accounts)
 if closing_accounts!=accounts:raise ValueError('guest-image-changed')
 if artifacts()!=files or directories()!=dirs or guest()!=who:raise ValueError('guest-image-changed')
 print(json.dumps({'environment':environment,'unit':unit,'accounts':accounts,'application_read':child,'artifacts':files,'directories':dirs,'identity':who}))
@@ -197,7 +203,16 @@ def file_identity(value, *, directory=False):
     )
 
 
-def validate_image(profile, image, evidence, kernel_evidence):
+def validate_image(profile, image, evidence, kernel_evidence, *, writer_pid=None):
+    """Validate image facts for quiescence or one explicitly identified writer.
+
+    An active image is not complete process, socket or application acceptance.
+    Existing quiesced collectors never supply ``writer_pid``.
+    """
+    require(
+        writer_pid is None or type(writer_pid) is int and 1 < writer_pid < 2**31,
+        "writer-pid",
+    )
     state.keys(
         evidence,
         {
@@ -243,9 +258,9 @@ def validate_image(profile, image, evidence, kernel_evidence):
     image.validate_environment(environment)
     expected_unit = {
         "LoadState": "loaded",
-        "ActiveState": "inactive",
-        "SubState": "dead",
-        "MainPID": "0",
+        "ActiveState": "inactive" if writer_pid is None else "active",
+        "SubState": "dead" if writer_pid is None else "running",
+        "MainPID": "0" if writer_pid is None else str(writer_pid),
         "UnitFileState": "disabled",
         "User": "1100",
         "Group": "1100",
@@ -272,7 +287,20 @@ def validate_image(profile, image, evidence, kernel_evidence):
             "files",
         },
     )
-    image.validate_no_writer(account)
+    if writer_pid is None:
+        image.validate_no_writer(account)
+    else:
+        require(
+            account["home_exists"] is False
+            and type(account["uid_processes"]) is list
+            and type(account["gid_processes"]) is list
+            and all(
+                type(pid) is int
+                for pid in account["uid_processes"] + account["gid_processes"]
+            )
+            and account["uid_processes"] == account["gid_processes"] == [writer_pid],
+            "writer-processes",
+        )
     require(
         account["names_used"] is True
         and account["uid_owners"] == account["gid_owners"] == ["reference-ledger"]
@@ -604,7 +632,11 @@ def validate(request, profile, phase, evidence):
     state.integer(application["record_count"], 1, 4096)
 
 
-def guest_image(request, profile):
+def guest_image(request, profile, *, writer_pid=None):
+    require(
+        writer_pid is None or type(writer_pid) is int and 1 < writer_pid < 2**31,
+        "writer-pid",
+    )
     return observe.decode(
         observe.native(
             [
@@ -620,6 +652,7 @@ def guest_image(request, profile):
                 GUEST_IMAGE,
                 profile["image_python"],
             ]
+            + ([] if writer_pid is None else [str(writer_pid)])
         )
     )
 

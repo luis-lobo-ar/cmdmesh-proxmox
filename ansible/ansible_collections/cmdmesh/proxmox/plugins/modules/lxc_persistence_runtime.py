@@ -4,12 +4,13 @@
 DOCUMENTATION = r"""
 ---
 module: lxc_persistence_runtime
-short_description: Inspect a running reference LXC with its application quiesced
+short_description: Inspect a running reference LXC and its explicit application phase
 description:
   - Checks explicit kernel, guest bind, image, ownership and reference evidence.
   - Holds the retained-pair mutex and both native configuration read leases.
-  - Requires the real application lock before consistent SQLite inspection.
-  - Supports the fixed reference profile and os_quiesced phase only.
+  - Takes the real application lock before consistent SQL in os_quiesced.
+  - Authenticates a peer-bound read without application EX or host SQL in active_writer.
+  - Supports only the fixed reference profile.
   - Does not start, stop, configure, repair, import, restore or write application data.
 options:
   source_request:
@@ -23,7 +24,7 @@ options:
   phase:
     description: Explicit application state required by the inspection.
     type: str
-    choices: [os_quiesced]
+    choices: [os_quiesced, active_writer]
     default: os_quiesced
 author:
   - Luis Lobo Borobia
@@ -42,6 +43,13 @@ EXAMPLES = r"""
     phase: os_quiesced
   register: runtime
 
+- name: Inspect an already active writer with its retained credential
+  cmdmesh.proxmox.lxc_persistence_runtime:
+    source_request: "{{ stopped_owner_source_request }}"
+    image_profile: "{{ retained_reference_image_profile }}"
+    phase: active_writer
+  register: writer
+
 - name: Require observation without lifecycle or recovery claims
   ansible.builtin.assert:
     that:
@@ -55,15 +63,19 @@ EXAMPLES = r"""
 
 RETURN = r"""
 observed:
-  description: Kernel, guest, retained ownership, image, reference and consistent application facts.
+  description: Admitted runtime plus consistent SQL or authenticated application read facts.
   type: dict
   returned: success
 os_runtime_verified:
-  description: All OS-running and quiesced-application checks passed at observation.
+  description: The selected running OS and application-phase checks passed.
   type: bool
   returned: always
 application_quiesced:
   description: The service is inactive and SQL was inspected under the real application lock.
+  type: bool
+  returned: always
+application_read_verified:
+  description: An authenticated peer-bound read passed in active_writer; false for os_quiesced.
   type: bool
   returned: always
 mutation_attempted:
@@ -75,7 +87,7 @@ boot_verified:
   type: bool
   returned: always
 rebuild_verified:
-  description: Always false; authenticated writer functionality is not tested.
+  description: Always false; no claimed write, stop or post-write SQL checkpoint is performed.
   type: bool
   returned: always
 restore_verified:
@@ -88,18 +100,24 @@ import re
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_retained_runtime as runtime,
+    persistence_writer_runtime as active,
 )
 
 
 def execute(source_request, image_profile, phase="os_quiesced", *, check_mode=False):
-    runtime.require(phase == "os_quiesced", "phase-unsupported")
-    observed = runtime.collect(source_request, image_profile, phase=phase)
+    runtime.require(phase in ("os_quiesced", "active_writer"), "phase-unsupported")
+    observed = (
+        runtime.collect(source_request, image_profile, phase=phase)
+        if phase == "os_quiesced"
+        else active.collect(source_request, image_profile)
+    )
     return {
         "changed": False,
         **runtime.FLAGS,
         "observed": observed,
         "os_runtime_verified": observed["os_runtime_verified"],
         "application_quiesced": observed["application_quiesced"],
+        "application_read_verified": observed.get("application_read_verified", False),
     }
 
 
@@ -114,6 +132,7 @@ def failure(error):
         "effects_may_exist": False,
         "os_runtime_verified": False,
         "application_quiesced": False,
+        "application_read_verified": False,
         **runtime.FLAGS,
     }
 
@@ -127,7 +146,7 @@ def main():
             "image_profile": {"type": "dict", "required": True, "no_log": True},
             "phase": {
                 "type": "str",
-                "choices": ["os_quiesced"],
+                "choices": ["os_quiesced", "active_writer"],
                 "default": "os_quiesced",
             },
         },
