@@ -150,6 +150,11 @@ Workflow authors can share the existing backup mutex through
 handoff operations across processes. Read the [shared-lock contract](docs/persistence-profile.md#shared-pair-lock)
 before using it in an operation controller.
 
+Retained-source controllers can use the separate
+[native configuration leases](docs/persistence-profile.md#native-guest-configuration-leases)
+without supplying a blank-guest policy. The native writer must run after its
+target read lease has closed.
+
 The developing `lxc_persistence_blank_boot` module consumes a separately trusted
 successful stage, publishes pinned pre-start checks and submits one isolated OS
 start. It verifies actual kernel/guest readiness and keeps application/recovery

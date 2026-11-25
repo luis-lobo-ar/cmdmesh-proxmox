@@ -1,7 +1,6 @@
 """Read-only kernel and guest proof for a bind-free reference OS boot."""
 
 from contextlib import contextmanager
-import fcntl
 import os
 from pathlib import Path
 import re
@@ -9,6 +8,7 @@ import socket
 import stat
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+    persistence_config_lock as config_lock,
     memory_remote as memory,
     persistence_blank_guard as guard,
     persistence_observe as observe,
@@ -24,7 +24,6 @@ ABSENT_PATHS = (
     "/run/reference-ledger",
 )
 ROOT_UID = 0
-LOCK_ROOT = Path("/run/lock/lxc")
 API_FIELDS = {"config", "pending", "ha", "status", "source_status"}
 KERNEL_FIELDS = {"init", "cgroup", "rootfs", "security", "generated_config"}
 
@@ -466,35 +465,13 @@ def api(policy):
 @contextmanager
 def target_read_lock(policy):
     guard.validate_policy(policy)
-    require(LOCK_ROOT.resolve(strict=True) == LOCK_ROOT, "native-lock-directory")
-    path = LOCK_ROOT / f"pve-config-{policy['vmid']}.lock"
-    require(path.resolve(strict=True) == path, "native-lock-path")
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
-        before = os.fstat(fd)
-        require(
-            stat.S_ISREG(before.st_mode)
-            and before.st_uid == ROOT_UID
-            and before.st_nlink == 1
-            and not before.st_mode & 0o022
-            and observe.stable(before) == observe.stable(path.lstat()),
-            "native-lock-file",
-        )
-        try:
-            fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise state.PersistenceError(
-                "persistence-blank-runtime-native-lock-busy"
-            ) from None
-        yield
-        require(
-            observe.stable(before)
-            == observe.stable(os.fstat(fd))
-            == observe.stable(path.lstat()),
-            "native-lock-changed",
-        )
-    finally:
-        os.close(fd)
+        with config_lock.read_guest(policy["vmid"]):
+            yield
+    except config_lock.ConfigLockError as error:
+        raise state.PersistenceError(
+            "persistence-blank-runtime-native-lock-" + error.reason
+        ) from None
 
 
 def collect(policy):

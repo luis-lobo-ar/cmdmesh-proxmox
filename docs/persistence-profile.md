@@ -657,3 +657,26 @@ Local tests use real cross-process locks, including both directions against the
 unchanged backup journal. They also cover marker reuse, independent pairs,
 read-only missing-runtime refusal, failure release, and foreign or replaced
 markers. They qualify this mutex component. Native handoff remains pending.
+## Native guest configuration leases
+
+`persistence_config_lock.read_guest(vmid)` acquires the guest's existing native
+shared configuration lock. It validates the lock directory, target ID, regular
+file, owner, permissions, link count, and unchanged file identity. It creates no
+files by default and refuses immediately when an exclusive writer holds the lock.
+The reference profile supports integer guest IDs from 100 through 999999.
+
+An operation controller may use `initialize=True` behind its mutation gate when
+a volatile lock file is absent after a reboot. Initialization creates only the
+absent empty file and syncs it. It preserves existing bytes and permissions and
+requires the native lock directory to exist. It never repairs a foreign file.
+
+Keep the retained source's shared lease while publishing its managed start
+denials. Release the replacement's lease before invoking its native configuration
+writer. `require_write_available(vmid)` provides an early nonblocking exclusive
+probe, then releases it. The probe does not reserve a later write. The native
+writer must still check the approved digest and acquire its own exclusive lock.
+
+The existing blank-runtime wrapper still validates its blank-only policy before
+using this primitive and preserves its named error family. Retained-source
+controllers use the shared primitive directly after their own source admission.
+They must not fabricate a blank policy merely to obtain a native lock.

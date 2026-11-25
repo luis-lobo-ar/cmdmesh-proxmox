@@ -182,17 +182,21 @@ class BlankRuntimeTests(unittest.TestCase):
             path = Path(work) / "pve-config-102.lock"
             path.write_bytes(b"")
             path.chmod(0o600)
-            with mock.patch.object(runtime, "LOCK_ROOT", Path(work)), mock.patch.object(
-                runtime, "ROOT_UID", os.geteuid()
-            ):
+            with mock.patch.object(
+                runtime.config_lock, "LOCK_ROOT", Path(work)
+            ), mock.patch.object(runtime.config_lock, "ROOT_UID", os.geteuid()):
                 with path.open("rb") as writer:
                     with runtime.target_read_lock(policy):
                         with self.assertRaises(BlockingIOError):
                             fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
                     fcntl.flock(writer, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    with self.assertRaises(runtime.state.PersistenceError):
+                    with self.assertRaises(runtime.state.PersistenceError) as failure:
                         with runtime.target_read_lock(policy):
                             self.fail("busy native configuration lock accepted")
+                    self.assertEqual(
+                        failure.exception.code,
+                        "persistence-blank-runtime-native-lock-busy",
+                    )
                 self.assertEqual(path.read_bytes(), b"")
 
     def test_wrong_initial_target_or_mapping_refuses_before_guest_execution(self):
