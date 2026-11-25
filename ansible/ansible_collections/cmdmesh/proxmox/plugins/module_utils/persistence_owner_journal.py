@@ -5,22 +5,29 @@ that lease nor admit a host, owner, guest or native action. A candidate head is
 successor authority only after the controller accepts its verified return.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 import os
 from pathlib import Path
+import stat
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_backup as backup,
     persistence_observe as observe,
     persistence_state as state,
+    persistence_guest_api as api,
 )
 
 RUNTIME_ROOT = Path("/var/lib/cmdmesh/owner-lifecycle")
 LIMIT = 4194304
 MAX_OPERATIONS = 4096
+ROOT_UID = 0
+VERSION = 2
+ACTION_PROFILE = "owner-os-action-v1"
+STAGES = ("dispatch", "ack", "terminal")
 RUNTIME = {
     "document_type": "cmdmesh.proxmox.owner-journal.runtime",
-    "schema_version": 1,
+    "schema_version": VERSION,
+    "action_profile": ACTION_PROFILE,
 }
 HEAD_FIELDS = {
     "profile_sha256",
@@ -43,7 +50,7 @@ def _digest(value):
 def _document(document_kind, **values):
     return {
         "document_type": "cmdmesh.proxmox.owner-journal." + document_kind,
-        "schema_version": 1,
+        "schema_version": VERSION,
         **values,
     }
 
@@ -53,7 +60,7 @@ def _schema(value, kind, fields):
     require(
         value["document_type"] == "cmdmesh.proxmox.owner-journal." + kind
         and type(value["schema_version"]) is int
-        and value["schema_version"] == 1,
+        and value["schema_version"] == VERSION,
         "schema",
     )
 
@@ -62,10 +69,12 @@ def _schema(value, kind, fields):
 class Binding:
     pair_key: str
     authority_sha256: str
+    guest: api.GuestBinding
 
     def __post_init__(self):
         state.digest(self.pair_key)
         state.digest(self.authority_sha256)
+        require(type(self.guest) is api.GuestBinding, "guest-binding")
 
 
 @dataclass
@@ -76,10 +85,19 @@ class Seal:
 
 
 @dataclass(frozen=True)
+class PhaseChain:
+    records: dict
+    files: dict
+    sha256: str
+
+
+@dataclass(frozen=True)
 class View:
     head: dict
     head_sha256: str
     seal: Seal
+    intent: dict | None
+    phases: PhaseChain
 
 
 @dataclass(frozen=True)
@@ -92,6 +110,7 @@ class Pending:
     intent_sha256: str
     pending_head_sha256: str
     seal: Seal
+    phases: PhaseChain
 
 
 @dataclass(frozen=True)
@@ -100,6 +119,7 @@ class Candidate:
     head_sha256: str
     result_sha256: str
     seal: Seal
+    phases: PhaseChain
 
 
 def _directory(path, seal):
@@ -153,7 +173,11 @@ def _write(path, value):
 def _profile(binding):
     require(type(binding) is Binding, "binding")
     return _document(
-        "profile", pair_key=binding.pair_key, authority_sha256=binding.authority_sha256
+        "profile",
+        pair_key=binding.pair_key,
+        authority_sha256=binding.authority_sha256,
+        action_profile=ACTION_PROFILE,
+        guest_binding=asdict(binding.guest),
     )
 
 
@@ -194,6 +218,177 @@ def _global(seal):
     )
 
 
+def _validate_intent(binding, intent):
+    _schema(
+        intent,
+        "intent",
+        {"profile_sha256", "sequence", "predecessor_sha256", "kind", "prepared_sha256"},
+    )
+    state.integer(intent["sequence"], 1, MAX_OPERATIONS)
+    state.digest(intent["prepared_sha256"])
+    state.digest(intent["predecessor_sha256"])
+    require(
+        intent["profile_sha256"] == _digest(_profile(binding))
+        and type(intent["kind"]) is str
+        and intent["kind"] in {"shutdown", "resume"},
+        "intent",
+    )
+
+
+def _prefix(names):
+    require(len(names) <= len(STAGES), "phase-membership")
+    expected = tuple(stage + ".json" for stage in STAGES[: len(names)])
+    require(set(names) == set(expected), "phase-membership")
+    return expected
+
+
+def _phase_payload(owner, intent, stage, payload, previous):
+    require(type(payload) is dict, "phase-payload")
+    action = "shutdown" if intent["kind"] == "shutdown" else "start"
+    kind = "vzshutdown" if action == "shutdown" else "vzstart"
+    if stage == "dispatch":
+        state.keys(
+            payload,
+            {
+                "action",
+                "binding",
+                "prepared_sha256",
+                "entry_sha256",
+                "host_epoch",
+                "clock",
+                "parameters",
+            },
+        )
+        state.keys(payload["binding"], {item.name for item in fields(api.GuestBinding)})
+        require(
+            _digest(payload["binding"]) == _digest(asdict(owner.guest)),
+            "dispatch-target",
+        )
+        binding = owner.guest
+        state.digest(payload["entry_sha256"])
+        state.integer(payload["clock"], 1, 2**63 - 1)
+        state.keys(payload["host_epoch"], {"boot_id", "mount_namespace"})
+        require(
+            payload["action"] == action
+            and payload["prepared_sha256"] == intent["prepared_sha256"]
+            and state.matches(
+                r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}",
+                payload["host_epoch"]["boot_id"],
+            )
+            and state.matches(
+                r"mnt:\[[1-9][0-9]*\]", payload["host_epoch"]["mount_namespace"]
+            )
+            and _digest(payload["parameters"])
+            == _digest(api._parameters(binding, action, None)),
+            "dispatch",
+        )
+        return
+    dispatch = previous["dispatch.json"]["payload"]
+    binding = owner.guest
+    if stage == "ack":
+        state.keys(payload, {"upid", "tls_verified"})
+        require(payload["tls_verified"] is True, "ack-tls")
+        parsed = api.parse_upid(binding, payload["upid"], kind=kind)
+        require(
+            dispatch["clock"] - 2 <= parsed["starttime"] <= dispatch["clock"] + 60,
+            "ack-clock",
+        )
+        return
+    state.keys(payload, {"task", "log", "native_outcome"})
+    ack = previous["ack.json"]["payload"]
+    api.validate_task_status(binding, ack["upid"], payload["task"], kind=kind)
+    require(payload["task"]["status"] == "stopped", "terminal")
+    outcome = api.native_outcome(payload["task"], payload["log"])
+    require(_digest(payload["native_outcome"]) == _digest(outcome), "terminal-outcome")
+
+
+def validate_phase_capture(binding, intent, records, descriptors):
+    """Validate a canonical raw phase prefix without IO or native truth claims.
+
+    This validates recorded metadata and links only. An incomplete prefix cannot
+    complete an operation; no captured document acquires a lease or authorizes
+    a retry. Manager-side descriptor ownership is fixed at root.
+    """
+    _validate_intent(binding, intent)
+    require(type(records) is dict and type(descriptors) is dict, "phase-capture")
+    names = _prefix(records)
+    state.keys(descriptors, set(names))
+    require(
+        all(type(raw) is bytes and 0 < len(raw) <= LIMIT for raw in records.values()),
+        "phase-capture-size",
+    )
+    documents = {}
+    predecessor = _digest(intent)
+    for name in names:
+        raw = records[name]
+        document = observe.decode(raw)
+        _schema(
+            document,
+            "phase",
+            {
+                "profile_sha256",
+                "sequence",
+                "intent_sha256",
+                "predecessor_sha256",
+                "stage",
+                "payload",
+            },
+        )
+        stage = name[:-5]
+        require(
+            state.canonical(document) == raw
+            and document["profile_sha256"] == intent["profile_sha256"]
+            and type(document["sequence"]) is int
+            and document["sequence"] == intent["sequence"]
+            and document["intent_sha256"] == _digest(intent)
+            and document["predecessor_sha256"] == predecessor
+            and document["stage"] == stage,
+            "phase-chain",
+        )
+        _phase_payload(binding, intent, stage, document["payload"], documents)
+        info = descriptors[name]
+        state.keys(info, {"path", "sha256", "identity"})
+        identity = info["identity"]
+        expected = str(
+            RUNTIME_ROOT / binding.pair_key / _slot(intent["sequence"]) / name
+        )
+        require(
+            info["path"] == expected
+            and info["sha256"] == state.sha256(raw)
+            and type(identity) is list
+            and len(identity) == 9
+            and all(type(part) is int and part >= 0 for part in identity)
+            and identity[0] > 0
+            and identity[1] > 0
+            and identity[2:7]
+            == [stat.S_IFREG | 0o600, ROOT_UID, ROOT_UID, 1, len(raw)],
+            "phase-file",
+        )
+        documents[name] = document
+        predecessor = state.sha256(raw)
+    return PhaseChain(documents, descriptors, _digest(descriptors))
+
+
+def _read_phases(binding, intent, slot, pending, seal):
+    names = {path.name for path in slot.iterdir()}
+    phases = names - {"intent.json", "result.json"}
+    ordered = _prefix(phases)
+    require(pending or len(ordered) == len(STAGES), "phases-incomplete")
+    _members(
+        slot, {"intent.json", *ordered, *(() if pending else ("result.json",))}, seal
+    )
+    records, descriptors = {}, {}
+    for name in ordered:
+        path = slot / name
+        records[name] = state.canonical(_read(path, seal))
+        descriptors[name] = {
+            "path": str(path),
+            "sha256": state.sha256(records[name]),
+            "identity": list(seal.files[str(path)]),
+        }
+    return validate_phase_capture(binding, intent, records, descriptors)
+
+
 def _inspect(binding, expected_head_sha256):
     """Read a fully coherent chain at an externally accepted head; create nothing."""
     profile = _profile(binding)
@@ -218,27 +413,13 @@ def _inspect(binding, expected_head_sha256):
         "head",
     )
     previous, cursor = _digest(genesis), genesis
+    intent, phases = None, PhaseChain({}, {}, _digest({}))
     for sequence in range(1, head["sequence"] + 1):
         slot = directory / _slot(sequence)
         _directory(slot, seal)
         pending = sequence == head["sequence"] and head["state"] == "pending"
-        _members(
-            slot, {"intent.json"} if pending else {"intent.json", "result.json"}, seal
-        )
         intent = _read(slot / "intent.json", seal)
-        _schema(
-            intent,
-            "intent",
-            {
-                "profile_sha256",
-                "sequence",
-                "predecessor_sha256",
-                "kind",
-                "prepared_sha256",
-            },
-        )
-        state.integer(intent["sequence"], 1, MAX_OPERATIONS)
-        state.digest(intent["prepared_sha256"])
+        _validate_intent(binding, intent)
         require(
             intent["sequence"] == sequence
             and type(intent["kind"]) is str
@@ -248,13 +429,21 @@ def _inspect(binding, expected_head_sha256):
             "intent",
         )
         intent_sha = _digest(intent)
+        phases = _read_phases(binding, intent, slot, pending, seal)
         result_sha = None
         if not pending:
             result = _read(slot / "result.json", seal)
             _schema(
                 result,
                 "result",
-                {"profile_sha256", "sequence", "intent_sha256", "evidence"},
+                {
+                    "profile_sha256",
+                    "sequence",
+                    "intent_sha256",
+                    "evidence",
+                    "phase_files",
+                    "phase_chain_sha256",
+                },
             )
             state.integer(result["sequence"], 1, MAX_OPERATIONS)
             require(
@@ -263,6 +452,15 @@ def _inspect(binding, expected_head_sha256):
                 and result["intent_sha256"] == intent_sha
                 and type(result["evidence"]) is dict,
                 "result",
+            )
+            require(
+                result["phase_chain_sha256"] == phases.sha256
+                and _digest(result["phase_files"]) == phases.sha256
+                and phases.records["terminal.json"]["payload"]["native_outcome"][
+                    "accepted"
+                ]
+                is True,
+                "result-phases",
             )
             result_sha = _digest(result)
         cursor = _head(
@@ -286,7 +484,7 @@ def _inspect(binding, expected_head_sha256):
         seal,
     )
     _close(seal)
-    return View(head, expected_head_sha256, seal)
+    return View(head, expected_head_sha256, seal, intent, phases)
 
 
 def _initialize(binding):
@@ -362,12 +560,12 @@ def _begin(binding, predecessor_sha256, kind, prepared_sha256):
         intent_sha,
         pending_sha,
         view.seal,
+        view.phases,
     )
 
 
-def _complete(operation, evidence):
-    """Publish a metadata candidate after caller validation; do not certify native work."""
-    require(type(operation) is Pending and type(evidence) is dict, "operation")
+def _current_operation(operation):
+    require(type(operation) is Pending, "operation")
     _close(operation.seal)
     current = _inspect(operation.binding, operation.pending_head_sha256)
     require(
@@ -375,6 +573,68 @@ def _complete(operation, evidence):
         and current.head["sequence"] == operation.sequence
         and current.head["intent_sha256"] == operation.intent_sha256,
         "operation",
+    )
+    require(
+        current.intent["kind"] == operation.kind
+        and current.intent["prepared_sha256"] == operation.prepared_sha256
+        and current.intent["predecessor_sha256"] == operation.predecessor_sha256
+        and current.phases.sha256 == operation.phases.sha256,
+        "operation-scope",
+    )
+    return current
+
+
+def _append_phase(operation, stage, payload):
+    """Durably append the next fixed phase and return a freshly sealed token."""
+    require(type(stage) is str and stage in STAGES, "phase")
+    require(
+        type(payload) is dict and len(state.canonical(payload)) <= LIMIT,
+        "phase-payload",
+    )
+    payload = observe.decode(state.canonical(payload))
+    current = _current_operation(operation)
+    count = len(current.phases.records)
+    require(count < len(STAGES) and stage == STAGES[count], "phase-order")
+    _phase_payload(
+        operation.binding, current.intent, stage, payload, current.phases.records
+    )
+    predecessor = (
+        operation.intent_sha256
+        if count == 0
+        else _digest(current.phases.records[STAGES[count - 1] + ".json"])
+    )
+    document = _document(
+        "phase",
+        profile_sha256=_digest(_profile(operation.binding)),
+        sequence=operation.sequence,
+        intent_sha256=operation.intent_sha256,
+        predecessor_sha256=predecessor,
+        stage=stage,
+        payload=payload,
+    )
+    slot = RUNTIME_ROOT / operation.binding.pair_key / _slot(operation.sequence)
+    intended_sha256 = _digest(document)
+    _close(current.seal)
+    _write(slot / (stage + ".json"), document)
+    view = _inspect(operation.binding, operation.pending_head_sha256)
+    require(
+        view.phases.files[stage + ".json"]["sha256"] == intended_sha256,
+        "phase-write-changed",
+    )
+    return replace(operation, seal=view.seal, phases=view.phases)
+
+
+def _complete(operation, evidence):
+    """Publish a metadata candidate after caller validation; do not certify native work."""
+    require(type(evidence) is dict, "operation")
+    current = _current_operation(operation)
+    require(
+        len(current.phases.records) == len(STAGES)
+        and current.phases.records["terminal.json"]["payload"]["native_outcome"][
+            "accepted"
+        ]
+        is True,
+        "phases-incomplete",
     )
     binding = operation.binding
     slot = RUNTIME_ROOT / binding.pair_key / _slot(operation.sequence)
@@ -384,6 +644,8 @@ def _complete(operation, evidence):
         sequence=operation.sequence,
         intent_sha256=operation.intent_sha256,
         evidence=evidence,
+        phase_files=current.phases.files,
+        phase_chain_sha256=current.phases.sha256,
     )
     result_sha = _write(slot / "result.json", result)
     head_sha = _publish(
@@ -399,7 +661,7 @@ def _complete(operation, evidence):
         ),
     )
     view = _inspect(binding, head_sha)
-    return Candidate(operation.sequence, head_sha, result_sha, view.seal)
+    return Candidate(operation.sequence, head_sha, result_sha, view.seal, view.phases)
 
 
 def _fail(operation, reason, outcome):

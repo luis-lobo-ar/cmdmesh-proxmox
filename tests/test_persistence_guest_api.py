@@ -21,6 +21,31 @@ import test_persistence_recipient as legacy
 
 
 class GuestBindingTests(unittest.TestCase):
+    def test_shared_task_status_validation_is_pure_and_keeps_exact_identity(self):
+        binding = api.GuestBinding("pve-example", 102, "1" * 64, "2" * 64, "3" * 64)
+        upid = "UPID:pve-example:00000010:00000020:6553F100:vzshutdown:102:root@pam:"
+        task = {
+            **api.parse_upid(binding, upid, kind="vzshutdown"),
+            "status": "stopped",
+            "exitstatus": "OK",
+        }
+        with mock.patch.object(
+            api, "get", side_effect=AssertionError("pure GET")
+        ), mock.patch.object(
+            api, "check_host", side_effect=AssertionError("pure host")
+        ):
+            api.validate_task_status(binding, upid, task, kind="vzshutdown")
+            for key, value in (
+                ("id", "103"),
+                ("pid", True),
+                ("status", "unknown"),
+                ("status", []),
+            ):
+                with self.subTest(key=key), self.assertRaises(ValueError):
+                    api.validate_task_status(
+                        binding, upid, dict(task, **{key: value}), kind="vzshutdown"
+                    )
+
     def setUp(self):
         request = legacy.example_request()
         self.source = copy.deepcopy(request["source_request"]["source"])

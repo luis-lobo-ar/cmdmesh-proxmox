@@ -1,6 +1,7 @@
 """Ordered metadata cannot turn uncertain native work into a new permission."""
 
 import copy
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -16,7 +17,45 @@ sys.path.insert(0, str(ROOT / "ansible"))
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_owner_journal as journal,
     persistence_pair_lock as pair,
+    persistence_guest_api as api,
 )
+
+
+def phase_payloads(pending):
+    """Modeled native metadata, never a claim that a real action occurred."""
+    binding = pending.binding.guest
+    clock = 1700000000 + pending.sequence
+    action = "shutdown" if pending.kind == "shutdown" else "start"
+    kind = "vzshutdown" if action == "shutdown" else "vzstart"
+    upid = f"UPID:{binding.node}:{16+pending.sequence:08X}:{32+pending.sequence:08X}:{clock:08X}:{kind}:102:root@pam:"
+    task = {
+        **api.parse_upid(binding, upid, kind=kind),
+        "status": "stopped",
+        "exitstatus": "OK",
+    }
+    log = [{"n": 1, "t": "TASK OK"}]
+    return {
+        "dispatch": {
+            "action": action,
+            "binding": asdict(binding),
+            "prepared_sha256": pending.prepared_sha256,
+            "entry_sha256": "e" * 64,
+            "host_epoch": {
+                "boot_id": "11111111-2222-3333-4444-555555555555",
+                "mount_namespace": "mnt:[123]",
+            },
+            "clock": clock,
+            "parameters": (
+                {} if action == "start" else {"timeout": "60", "forceStop": "0"}
+            ),
+        },
+        "ack": {"upid": upid, "tls_verified": True},
+        "terminal": {
+            "task": task,
+            "log": log,
+            "native_outcome": api.native_outcome(task, log),
+        },
+    }
 
 
 class OwnerJournalTests(unittest.TestCase):
@@ -35,7 +74,7 @@ class OwnerJournalTests(unittest.TestCase):
             self.begin(head, kind=[])
         self.assertEqual(before, self.files())
 
-    def test_all_protocol_metadata_versions_require_integer_one(self):
+    def test_all_protocol_metadata_versions_require_current_integer_version(self):
         head = self.initialize()["head_sha256"]
         for path in (
             journal.RUNTIME_ROOT / "runtime.json",
@@ -136,8 +175,15 @@ class OwnerJournalTests(unittest.TestCase):
         patch = mock.patch.object(journal.backup, "RUNTIME_ROOT", self.root / "pair")
         patch.start()
         self.addCleanup(patch.stop)
+        patch = mock.patch.object(journal, "ROOT_UID", os.geteuid())
+        patch.start()
+        self.addCleanup(patch.stop)
         self.datasets = {"data": {"guid": "11"}, "config": {"guid": "22"}}
-        self.binding = journal.Binding(journal.state.pair_key(self.datasets), "b" * 64)
+        self.binding = journal.Binding(
+            journal.state.pair_key(self.datasets),
+            "b" * 64,
+            api.GuestBinding("pve-example", 102, "1" * 64, "2" * 64, "3" * 64),
+        )
 
     def initialize(self):
         with pair.locked_pair(self.datasets, initialize=True):
@@ -149,6 +195,8 @@ class OwnerJournalTests(unittest.TestCase):
 
     def complete(self, pending, result=None):
         with pair.locked_pair(self.datasets):
+            for stage, payload in phase_payloads(pending).items():
+                pending = journal._append_phase(pending, stage, payload)
             return journal._complete(
                 pending, result or {"observed": "qualified by caller"}
             )
@@ -206,7 +254,9 @@ class OwnerJournalTests(unittest.TestCase):
         for kind, request in (("shutdown", "d" * 64), ("resume", "e" * 64)):
             with self.subTest(kind=kind), self.assertRaises(ValueError):
                 self.begin(head, kind, request)
-        changed_owner = journal.Binding(self.binding.pair_key, "f" * 64)
+        changed_owner = journal.Binding(
+            self.binding.pair_key, "f" * 64, self.binding.guest
+        )
         with self.assertRaises(ValueError):
             journal._initialize(changed_owner)
         with self.assertRaises(ValueError):
@@ -332,7 +382,7 @@ from pathlib import Path
 sys.path.insert(0,sys.argv[1])
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import persistence_pair_lock as p, persistence_owner_journal as j
 p.backup.RUNTIME_ROOT=Path(sys.argv[2]);j.RUNTIME_ROOT=Path(sys.argv[3]);datasets=json.loads(sys.argv[4])
-b=j.Binding(j.state.pair_key(datasets),'b'*64)
+b=j.Binding(j.state.pair_key(datasets),'b'*64,j.api.GuestBinding('pve-example',102,'1'*64,'2'*64,'3'*64))
 try:
  with p.locked_pair(datasets):
   if sys.argv[5]=='busy':raise AssertionError('pair lease was not held')
