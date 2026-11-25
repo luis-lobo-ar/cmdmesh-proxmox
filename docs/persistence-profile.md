@@ -1601,8 +1601,8 @@ does not establish that qualification.
 
 The proof contains the actual observed phase plus separately qualified current
 and worker-fence hashes. This filesystem component checks their shape and
-binding. It does not collect or validate native-worker safety. That observer,
-the Ansible boundary, and native resolution trials remain unqualified.
+binding. It does not collect or validate native-worker safety. The fence
+observer, a resolver Ansible action, and native resolution trials remain unqualified.
 
 A stopped API, inactive units, an empty cgroup, elapsed time, or reacquired
 target shared lock cannot exclude a delayed native worker queued behind that
@@ -1628,8 +1628,9 @@ history use the same native-result validator and require canonical result bytes.
 
 `persistence_owner_transition` is an internal SDK for a quiesced reference
 application whose accepted writer checkpoint comes from `load_writer_checkpoint`.
-It has no public Ansible action yet. Its local tests use real filesystem locks
-and modeled PVE responses. Native shutdown and restart remain unqualified.
+The developing Ansible boundary below exposes its finite actions. Local SDK
+tests use real filesystem locks and modeled PVE responses. Native shutdown and
+restart remain unqualified.
 
 | SDK function | Contract |
 | --- | --- |
@@ -1639,6 +1640,8 @@ and modeled PVE responses. Native shutdown and restart remain unqualified.
 | `operate(checkpoint, prepared_raw, prepared_sha256, timeout_seconds=240)` | Rechecks preparation, begins one operation, dispatches one fixed native request, and verifies its final state. A pending attempt cannot become another request. |
 | `status(checkpoint, prepared_raw, prepared_sha256, accepted_head_sha256, prior_runtime=None)` | Reads a separately accepted transition, its exact native task, and current state. Writes nothing and never dispatches a request. |
 | `validate_result(checkpoint, prepared_raw, prepared_sha256, result)` | Checks captured return fields, raw records, native task metadata, and application proofs without filesystem or network access. Does not establish fresh native truth. |
+| `inspect_initialization(checkpoint, expected_head_sha256)` | Rechecks absent or exact unused metadata plus current state, without creating files. Partial, used, or foreign state refuses. |
+| `inspect_transition(checkpoint, prepared_raw, prepared_sha256)` | Rechecks a pinned ready preparation and current state without an intent, dispatch, or native request. |
 
 Preparation binds the accepted checkpoint, predecessor, action, current entry,
 host epoch, and backup mount. For shutdown, it also binds init process birth and
@@ -1679,3 +1682,42 @@ failed, or refused by postconditions. No automatic compensation or retry occurs.
 A found target HEAD is not external acceptance. Metadata-only resolution,
 including worker fencing for unknown acknowledgements, remains a separate
 developing operation. This SDK does not qualify manager reboot or recovery.
+
+### Ansible owner OS boundary (developing)
+
+`cmdmesh.proxmox.lxc_persistence_owner_os` reconstructs the accepted checkpoint
+before current-state access. Every action requires the original writer
+`prepared_json`, `prepared_sha256`, `completion_json`, `completion_sha256`, and
+all thirteen raw `journal` strings. These are writer inputs. They are separate
+from a later OS transition's preparation.
+
+| Action | Additional inputs | Check mode |
+| --- | --- | --- |
+| `initialize` | `head_sha256` is the proposed genesis. Normal mode requires `allow_mutation: true`. | Validates current state and absent or exact unused metadata. Creates nothing. |
+| `prepare` | `head_sha256` is the externally accepted predecessor. `kind` is `shutdown` or `resume`. Optional `prior_runtime` supplies the accepted running frame. | Same read-only operation as normal mode. |
+| `transition` | `transition_prepared_json` and `transition_prepared_sha256` bind the OS preparation. Normal mode requires `allow_mutation: true`. | Rechecks the preparation and current state without a slot, dispatch, or POST. |
+| `status` | The OS preparation pair, externally accepted returned `head_sha256`, and optional `prior_runtime`. | Same completed-only read-only operation as normal mode. |
+
+Irrelevant arguments refuse. The transition action takes its predecessor from
+the pinned preparation. It accepts no separate head, kind, or prior-runtime
+override. Mutation permission defaults to false. No resolver action is exposed.
+
+Preparation returns `transition_prepared_json` and its exact hash. Other
+successful actions return `result_json` and `result_sha256`. Verify this outer
+hash before decoding the JSON. A transition's nested `result_sha256` is the
+journal-result hash. The outer hash covers the complete SDK return. Pass the
+decoded return to `validate_result` before accepting its successor head.
+
+A check-mode `changed: true` means the action would change state. Its
+`mutation_attempted`, `metadata_initialized`, and `os_transition_verified`
+flags remain false. `metadata_initialized` describes a successful initialization
+call, not whether a later transition uses an existing journal. Mutator failures
+report possible effects conservatively and clear verification flags. Raw inputs
+and exception text are withheld from output, including argument-validation
+failures. A failed or unknown return grants no retry or node-head adoption.
+
+Local tests cover actual Ansible serialization, an installed collection, and
+the exact module and owned-helper bytes in generated AnsiballZ archives.
+Installed refusal tests use malformed authority and reach no host observation.
+Modeled SDK tests cover successful receipt transfer and native lock handoff.
+These checks do not qualify a managed initialization or lifecycle trial.

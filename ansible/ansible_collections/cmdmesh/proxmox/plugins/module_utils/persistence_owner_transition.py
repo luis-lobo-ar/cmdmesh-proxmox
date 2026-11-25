@@ -155,6 +155,92 @@ def initialize(checkpoint, expected_head_sha256):
     return result
 
 
+def _initialization_metadata(owner):
+    """Read the initializer's supported absent/unused states without creating them."""
+    import os
+
+    journal._profile(owner)
+    seal, absent = journal.Seal(), []
+    journal._directory(journal.RUNTIME_ROOT.parent, seal)
+    directory = journal.RUNTIME_ROOT / owner.pair_key
+    if not os.path.lexists(journal.RUNTIME_ROOT):
+        absent.append(journal.RUNTIME_ROOT)
+        changed = True
+    else:
+        journal._global(seal)
+        if not os.path.lexists(directory):
+            absent.append(directory)
+            changed = True
+        else:
+            view = journal._inspect(owner, digest(journal._genesis(owner)))
+            seal = view.seal
+            changed = False
+    return changed, seal, absent
+
+
+def _close_initialization_metadata(seal, absent):
+    import os
+
+    journal._close(seal)
+    require(not any(os.path.lexists(path) for path in absent), "initialization-changed")
+
+
+def inspect_initialization(checkpoint, expected_head_sha256):
+    """Check explicit initialization preconditions; never initialize or adopt metadata."""
+    state.digest(expected_head_sha256)
+    require(expected_head_sha256 == genesis_sha256(checkpoint), "genesis")
+    owner = binding(checkpoint)
+    with _leased(checkpoint, "os_quiesced", None) as scope:
+        history = _history(checkpoint)
+        changed, seal, absent = _initialization_metadata(owner)
+        with current._current_leased(checkpoint, scope.entry, scope.raw):
+            result = {
+                "would_change": changed,
+                "head_sha256": expected_head_sha256,
+                "application_quiesced": True,
+            }
+        _close_history((checkpoint, history))
+        _close_initialization_metadata(seal, absent)
+    return result
+
+
+def inspect_transition(checkpoint, prepared_raw, prepared_sha256):
+    """Revalidate one ready preparation without a slot, dispatch record or POST."""
+    prepared = _decode(checkpoint, prepared_raw, prepared_sha256)
+    phase = _phase(prepared["kind"])
+    owner, prior = binding(checkpoint), prepared["prior_runtime"]
+    with _leased(checkpoint, phase, prior) as scope:
+        history = _history(checkpoint)
+        view = journal._inspect(owner, prepared["predecessor_sha256"])
+        require(view.head["state"] == "ready", "pending")
+        current.same(_entry_identity(scope.entry), prepared["entry"], "preflight-entry")
+        current.same(
+            observe.mount_facts(scope.request["backup_store"]),
+            prepared["backup_store"],
+            "backup-mount",
+        )
+        with current._current_leased(
+            checkpoint, scope.entry, scope.raw, prior
+        ) as before:
+            current.same(
+                _init_identity(before), prepared["init_identity"], "preflight-init"
+            )
+            require(
+                before["observation"]["guest"]["runtime"]["uptime"]
+                >= prepared["uptime_floor"],
+                "preflight-uptime",
+            )
+            result = {
+                "would_change": True,
+                "prepared_sha256": prepared_sha256,
+                "predecessor_sha256": prepared["predecessor_sha256"],
+                "application_quiesced": True,
+            }
+        _close_history((checkpoint, history))
+        journal._close(view.seal)
+    return result
+
+
 def prepare(checkpoint, predecessor_sha256, kind, prior_runtime=None):
     """Observe one ready transition without creating metadata or dispatching work."""
     phase = _phase(kind)

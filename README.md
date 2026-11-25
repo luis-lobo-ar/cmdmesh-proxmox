@@ -202,8 +202,11 @@ fencing. It never retries the old native request.
 The internal [owner OS transition SDK](docs/persistence-profile.md#same-owner-os-transitions-developing)
 combines current admission with ordered metadata and one native request.
 Preparation and status are read-only. It preserves interrupted attempts and
-requires separately accepted successor hashes. It has no public Ansible action
-or managed shutdown/restart qualification yet.
+requires separately accepted successor hashes. The developing
+[`lxc_persistence_owner_os` boundary](docs/persistence-profile.md#ansible-owner-os-boundary-developing)
+exposes initialization, preparation, one OS transition, and status. It defaults
+to refusing mutations and supports meaningful check mode. Managed shutdown and
+restart qualification remain pending.
 
 Internal lifecycle workers can inspect a stopped owner under locks they already
 hold. The [stopped worker contract](docs/persistence-profile.md#caller-leased-stopped-inspection-developing)
