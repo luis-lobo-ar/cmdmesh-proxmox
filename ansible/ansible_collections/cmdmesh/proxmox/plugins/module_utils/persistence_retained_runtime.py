@@ -717,7 +717,7 @@ def collect(request, image_profile, *, phase="os_quiesced"):
     """Collect an OS-running, application-quiesced frame without lifecycle writes."""
     require(phase == "os_quiesced", "phase-unsupported")
     request, profile = copy.deepcopy(request), copy.deepcopy(image_profile)
-    _, image, binding = load_profile(request, profile)
+    _, _, binding = load_profile(request, profile)
     host = observe.host_facts(request)
     guard = observe.load_guard(request["reference_guard"])
     observe.validate_request(request, guard)
@@ -725,96 +725,110 @@ def collect(request, image_profile, *, phase="os_quiesced"):
     with pair_lock.locked_pair(policy["datasets"]), ExitStack() as leased:
         for vmid in sorted((policy["vmid"], policy["retired_guest"]["vmid"])):
             leased.enter_context(config_lock.read_guest(vmid))
-        guest = observe.guest_facts(policy)
-        validate_running_guest(request, profile, guest)
-        kernel_before = kernel.collect(binding)
-        reference_before = reference_facts(request)
-        binds_before = collect_bindings(binding, kernel_before, policy["datasets"])
-        image_before = guest_image(request, profile)
-        validate_image(profile, image, image_before, kernel_before)
+        validate_running_guest(request, profile, observe.guest_facts(policy))
         config = Path(policy["datasets"]["config"]["mountpoint"]) / "application.json"
         uid, gid = (
             policy["mapping"]["offset"] + policy["mapping"][name]
             for name in ("uid", "gid")
         )
         with observe.locked_config(config, uid, gid) as raw:
-            require(
-                state.sha256(raw) == policy["application"]["config_sha256"],
-                "configuration-changed",
-            )
-            retained = retained_facts(policy, guard)
-            database = Path(policy["datasets"]["data"]["mountpoint"]) / "ledger.sqlite3"
-            application = {
-                "instance_id": policy["application"]["instance_id"],
-                "config_sha256": policy["application"]["config_sha256"],
-                "mapping": dict(policy["mapping"]),
-                **observe.read_database(database, policy["application"]["instance_id"]),
-            }
-            retained_after = retained_facts(policy, guard)
-            reference_after = reference_facts(request)
-            guest_after = observe.guest_facts(policy)
-            validate_running_guest(request, profile, guest_after)
-            host_after = observe.host_facts(request)
-            require(
-                observe.read_database(database, application["instance_id"])
-                == {
-                    key: application[key]
-                    for key in ("database_sha256", "records_sha256", "record_count")
-                },
-                "database-changed",
-            )
-            image_after = guest_image(request, profile)
-            binds_after = collect_bindings(binding, kernel_before, policy["datasets"])
-            kernel_after = kernel.collect(binding)
-            require(
-                host_after == host
-                and stable_guest(guest_after) == stable_guest(guest)
-                and guest_after["runtime"]["uptime"] >= guest["runtime"]["uptime"],
-                "host-or-guest-changed",
-            )
-            require(
-                retained_after == retained
-                and reference_after == reference_before
-                and binds_after == binds_before
-                and kernel_after == kernel_before
-                and image_after == image_before,
-                "runtime-changed",
-            )
-            seal_database(
-                database,
-                application["database_sha256"],
-                retained_after["application"]["database"],
-            )
-            observe.load_guard(request["reference_guard"])
-            require(
-                owner_seal(policy, guard)
-                == guard.ownership_seal(retained_after["ownership"])
-                and reference_files(request) == reference_after["files"],
-                "control-files-changed",
-            )
-            init = kernel_after["init"]
-            require(
-                kernel.reader.memory.init_state(init["pid"])
-                == (init["pstart"], init["pid_namespace_inode"]),
-                "init-changed",
-            )
-            result = {
-                "schema_version": 1,
-                "phase": phase,
-                "source": copy.deepcopy(request["source"]),
-                "host": host_after,
-                "guest": guest_after,
-                "kernel": kernel_after,
-                "retained": retained_after,
-                "bindings": binds_after,
-                "image": image_after,
-                "reference": reference_after,
-                "application": application,
-                "os_runtime_verified": True,
-                "application_quiesced": True,
-                **FLAGS,
-            }
-            validate(request, profile, phase, result)
+            result = _collect_leased(request, profile, guard, binding, host, raw)
+    return result
+
+
+def _collect_leased(request, profile, guard, binding, host, raw):
+    """Inspect under the caller's pair EX, both native SH and application EX.
+
+    Only admitted internal lifecycle controllers call this worker. It never
+    acquires or releases these leases. The public collector owns its own scopes.
+    """
+    policy = request["policy"]
+    require(
+        type(raw) is bytes
+        and state.sha256(raw) == policy["application"]["config_sha256"],
+        "configuration-changed",
+    )
+    _, image, expected_binding = load_profile(request, profile)
+    require(binding == expected_binding, "binding-changed")
+    guest = observe.guest_facts(policy)
+    validate_running_guest(request, profile, guest)
+    kernel_before = kernel.collect(binding)
+    reference_before = reference_facts(request)
+    binds_before = collect_bindings(binding, kernel_before, policy["datasets"])
+    image_before = guest_image(request, profile)
+    validate_image(profile, image, image_before, kernel_before)
+    retained = retained_facts(policy, guard)
+    database = Path(policy["datasets"]["data"]["mountpoint"]) / "ledger.sqlite3"
+    application = {
+        "instance_id": policy["application"]["instance_id"],
+        "config_sha256": policy["application"]["config_sha256"],
+        "mapping": dict(policy["mapping"]),
+        **observe.read_database(database, policy["application"]["instance_id"]),
+    }
+    retained_after = retained_facts(policy, guard)
+    reference_after = reference_facts(request)
+    guest_after = observe.guest_facts(policy)
+    validate_running_guest(request, profile, guest_after)
+    host_after = observe.host_facts(request)
+    require(
+        observe.read_database(database, application["instance_id"])
+        == {
+            key: application[key]
+            for key in ("database_sha256", "records_sha256", "record_count")
+        },
+        "database-changed",
+    )
+    image_after = guest_image(request, profile)
+    binds_after = collect_bindings(binding, kernel_before, policy["datasets"])
+    kernel_after = kernel.collect(binding)
+    require(
+        host_after == host
+        and stable_guest(guest_after) == stable_guest(guest)
+        and guest_after["runtime"]["uptime"] >= guest["runtime"]["uptime"],
+        "host-or-guest-changed",
+    )
+    require(
+        retained_after == retained
+        and reference_after == reference_before
+        and binds_after == binds_before
+        and kernel_after == kernel_before
+        and image_after == image_before,
+        "runtime-changed",
+    )
+    seal_database(
+        database,
+        application["database_sha256"],
+        retained_after["application"]["database"],
+    )
+    observe.load_guard(request["reference_guard"])
+    require(
+        owner_seal(policy, guard) == guard.ownership_seal(retained_after["ownership"])
+        and reference_files(request) == reference_after["files"],
+        "control-files-changed",
+    )
+    init = kernel_after["init"]
+    require(
+        kernel.reader.memory.init_state(init["pid"])
+        == (init["pstart"], init["pid_namespace_inode"]),
+        "init-changed",
+    )
+    result = {
+        "schema_version": 1,
+        "phase": "os_quiesced",
+        "source": copy.deepcopy(request["source"]),
+        "host": host_after,
+        "guest": guest_after,
+        "kernel": kernel_after,
+        "retained": retained_after,
+        "bindings": binds_after,
+        "image": image_after,
+        "reference": reference_after,
+        "application": application,
+        "os_runtime_verified": True,
+        "application_quiesced": True,
+        **FLAGS,
+    }
+    validate(request, profile, "os_quiesced", result)
     return result
 
 

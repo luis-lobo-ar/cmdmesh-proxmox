@@ -933,13 +933,13 @@ Only guard1063 and image helper21bd are executable inputs. The profile supports
 the reference Ubuntu/amd64, local2GiB, memory512MiB, oneCPU/no-swap configuration.
 Unknown sources, unsupported profiles and `active_writer` refuse before collection.
 
-The collector admits the host and API identity before guest execution. It holds
-the existing retained-pair EX mutex and both old/current native config SH leases.
-It checks actual kernel identity, target references and guest bind backing, then
-the image/account and inactive, disabled application unit. It takes the real
-application configuration EX before lower retained-state checks and consistent
-SQLite inspection. It does not call the stopped collector or the image helper's
-retained-path-absence checks.
+The collector admits the host and API identity before retained-file access or
+guest execution. It holds the existing retained-pair EX mutex and both old/current
+native config SH leases. After API admission, it takes the real application
+configuration EX. It checks actual kernel identity, target references, guest bind
+backing, and the image/account and inactive, disabled application unit. Lower
+retained-state checks and consistent SQLite inspection use the same EX. It does
+not call the stopped collector or the image helper's retained-path-absence checks.
 
 Closing observations repeat image, API, kernel, binds, ownership, references and
 SQL. Only nondecreasing typed uptime and the root image's normal mtime/ctime are
@@ -956,6 +956,16 @@ commands or local source-path access. The guest probe executes the pinned lower
 image helpers and returns hashes and metadata, never shadow contents or tokens.
 It rescans the account/process state after its closing environment and unit reads.
 The Ansible boundary redacts input invocation and unexpected errors.
+
+The public collector acquires the pair mutex, both native guest read leases, and
+the application configuration EX before runtime inspection. Internal lifecycle
+controllers can use the private `_collect_leased` worker while retaining those
+same leases across startup. The worker never acquires or releases the caller's
+locks. It verifies the configuration bytes and guest binding before inspection.
+The public collector closes every lock context after the worker returns, so late
+configuration or lease changes still refuse the result. No CLI, MCP, or Ansible
+argument can bypass lock acquisition. Real file-lock and SQLite tests cover the
+worker contract. Native startup qualification remains separate.
 
 `os_runtime_verified` and `application_quiesced` describe this observation only.
 Mutation, boot-operation, rebuild, restore and backup flags remain false. Native
