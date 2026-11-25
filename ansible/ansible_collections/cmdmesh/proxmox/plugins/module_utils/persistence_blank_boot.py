@@ -542,11 +542,7 @@ def observe_attempt(prepared, directory):
         "log": log,
         "native_outcome": outcome,
     }
-    if (
-        task["status"] != "stopped"
-        or task.get("exitstatus") != "OK"
-        or not outcome["accepted"]
-    ):
+    if task["status"] != "stopped" or not outcome["accepted"]:
         return result
     units = publication(prepared, running=True)
     observed = runtime.collect(prepared["policy"])

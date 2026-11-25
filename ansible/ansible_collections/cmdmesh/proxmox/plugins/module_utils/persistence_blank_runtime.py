@@ -97,11 +97,17 @@ def validate_api(policy, value):
         ("cpus", 1),
         ("maxmem", 536870912),
         ("maxswap", 0),
-        ("maxdisk", 2147483648),
     ):
         require(
             type(current.get(key)) is int and current[key] == expected, "runtime-config"
         )
+    # PVE reports filesystem capacity for a running CT, configured raw image
+    # bytes for a stopped CT. The exact image size is independently kernel-bound.
+    require(
+        type(current.get("maxdisk")) is int
+        and 0 < current["maxdisk"] <= policy["rootfs"]["identity"][6],
+        "filesystem-capacity",
+    )
     source = value["source_status"]
     require(
         type(source) is dict

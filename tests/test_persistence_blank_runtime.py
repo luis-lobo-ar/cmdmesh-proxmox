@@ -88,6 +88,20 @@ def model():
 
 
 class BlankRuntimeTests(unittest.TestCase):
+    def test_running_filesystem_capacity_is_distinct_from_raw_image_bytes(self):
+        policy, value = model()
+        value["status"]["maxdisk"] = 2040373248
+        runtime.validate(policy, value)
+        for invalid in (None, True, 0, -1, 2147483649):
+            with self.subTest(invalid=invalid):
+                value["status"]["maxdisk"] = invalid
+                with self.assertRaises(ValueError):
+                    runtime.validate(policy, value)
+        value["status"]["maxdisk"] = 2040373248
+        value["rootfs"]["identity"][6] -= 4096
+        with self.assertRaises(ValueError):
+            runtime.validate(policy, value)
+
     def test_complete_runtime_qualifies_no_application_claim(self):
         policy, value = model()
         self.assertIsNone(runtime.validate(policy, value))

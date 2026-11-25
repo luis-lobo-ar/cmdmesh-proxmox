@@ -183,6 +183,76 @@ class BlankBootTests(unittest.TestCase):
         with self.assertRaises(state.PersistenceError):
             boot.boot(raw, sha)
 
+    def warning_task(self, request, upid, *, kind="vzcreate"):
+        if kind != "vzstart":
+            return self.task_state(request, upid, kind=kind)
+        self.assertEqual(upid, self.task["upid"])
+        return {**self.task, "exitstatus": "WARNINGS: 1"}, [
+            {"n": 1, "t": recipient.WARNING},
+            {"n": 2, "t": "TASK WARNINGS: 1"},
+        ]
+
+    def test_known_warning_still_requires_complete_os_runtime_proof(self):
+        raw, sha = self.prepared()
+        with mock.patch.object(recipient, "task_state", side_effect=self.warning_task):
+            result = boot.boot(raw, sha)
+        self.assertTrue(result["boot_verified"])
+        self.assertEqual(result["task"]["exitstatus"], "WARNINGS: 1")
+        self.assertEqual(result["native_outcome"]["warning_count"], 1)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_readonly_known_warning_reconciliation_preserves_failed_attempt(self):
+        raw, sha = self.prepared()
+        with mock.patch.object(recipient, "task_state", side_effect=self.warning_task):
+            with mock.patch.object(
+                boot.runtime,
+                "collect",
+                side_effect=state.PersistenceError("old-postcheck"),
+            ):
+                with self.assertRaises(state.PersistenceError):
+                    boot.boot(raw, sha)
+            directory = boot.claim_path(boot.load_prepared(raw, sha))
+            before = {p.name: (p.read_bytes(), p.stat()) for p in directory.iterdir()}
+            self.assertIn("failed.json", before)
+            self.assertNotIn("complete.json", before)
+            with mock.patch.object(
+                recipient, "post_guest_action"
+            ) as post, mock.patch.object(
+                boot, "reload_units"
+            ) as reload, mock.patch.object(
+                boot.backup, "write_private"
+            ) as write:
+                result = boot.status(raw, sha)
+            post.assert_not_called()
+            reload.assert_not_called()
+            write.assert_not_called()
+            self.assertTrue(result["boot_verified"])
+            self.assertEqual(
+                before,
+                {p.name: (p.read_bytes(), p.stat()) for p in directory.iterdir()},
+            )
+            self.runtime["init"]["uid_map"] = [[0, 0, 65536]]
+            with self.assertRaises(state.PersistenceError):
+                boot.status(raw, sha)
+        self.assertEqual(len(self.posts), 1)
+
+    def test_unrecognized_warning_never_skips_to_runtime_acceptance(self):
+        raw, sha = self.prepared()
+
+        def unknown(request, upid, *, kind="vzcreate"):
+            task, log = self.warning_task(request, upid, kind=kind)
+            if kind == "vzstart":
+                log[0]["t"] = "WARN: unrecognized warning"
+            return task, log
+
+        with mock.patch.object(recipient, "task_state", side_effect=unknown):
+            with mock.patch.object(boot.runtime, "collect") as collect:
+                with self.assertRaises(state.PersistenceError):
+                    boot.boot(raw, sha)
+                self.assertFalse(boot.status(raw, sha)["boot_verified"])
+            collect.assert_not_called()
+        self.assertEqual(len(self.posts), 1)
+
     def test_late_runtime_pid_change_during_source_context_exit_cannot_complete(self):
         raw, sha = self.prepared()
         original = recipient.observe.source_state
