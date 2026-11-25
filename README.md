@@ -166,11 +166,15 @@ provides process, root-image, mapping and resource evidence independently of bla
 guest policy. It does not establish ownership, guest bind backing or application
 health. A separate retained-runtime collector must supply those checks.
 
-The developing `lxc_persistence_runtime` module supplies the
-[OS-running, application-quiesced inspection](docs/persistence-profile.md#running-os-with-a-quiesced-application-developing).
-It holds real pair/config/application locks and checks guest bind backing, image,
-owner, references and consistent SQL. It performs no lifecycle action. Native
-qualification and the later authenticated writer phase remain pending.
+The developing `lxc_persistence_runtime` module supports two read-only phases.
+[Quiesced inspection](docs/persistence-profile.md#running-os-with-a-quiesced-application-developing)
+takes the actual application lock for consistent SQL.
+[Active-writer inspection](docs/persistence-profile.md#active-writer-observation-developing)
+authenticates a retained-credential read through a verified local socket peer,
+without application EX or host-side database reads. Both phases hold pair/native
+leases and check guest backing, image, owner and references. Neither phase starts
+or enables the service, appends a record, or claims rebuild or restore. The
+claimed native write/read-back/stop/SQL sequence remains pending.
 
 The developing `lxc_persistence_attach` module configures the reference data and
 configuration binds on a stopped replacement. It denies normal and debug starts

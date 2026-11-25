@@ -931,7 +931,9 @@ profile has these exact fields:
 
 Only guard1063 and image helper21bd are executable inputs. The profile supports
 the reference Ubuntu/amd64, local2GiB, memory512MiB, oneCPU/no-swap configuration.
-Unknown sources, unsupported profiles and `active_writer` refuse before collection.
+Unknown sources and unsupported profiles refuse before collection. The direct
+quiesced collector rejects `active_writer`. The Ansible boundary dispatches that
+phase to the separate active observer described below.
 
 The collector admits the host and API identity before retained-file access or
 guest execution. It holds the existing retained-pair EX mutex and both old/current
@@ -1082,6 +1084,60 @@ the pinned reference application. They prove protocol and error behavior only.
 There is no active-writer lifecycle command or native rebuild acceptance yet.
 The reference application must remain stopped until its separate lifecycle
 controller, process admission, claims and stopping behavior are qualified.
+
+## Active-writer observation (developing)
+
+`lxc_persistence_runtime` accepts `phase: active_writer` for an already running
+reference service. It never starts or enables the service. Check mode performs
+the same observations. The matching library is
+`persistence_writer_runtime.collect(request, image_profile)`.
+
+The observer holds the existing pair EX and both native guest SH leases. It
+verifies current host/API/kernel, the retired owner and its denials, target
+references, ZFS GUIDs, mount sources, directory permissions and actual guest
+bind backing. The active image must still use the disabled service, known
+program and account baseline. Exactly one application UID/GID process is allowed.
+
+The socket peer must match the guest service's MainPID through the supported
+two-level namespace PID mapping. Its birth, PID and mount namespaces, root,
+mapped credentials, Python executable, arguments and systemd cgroup must match
+the admitted guest and service. Guest-root file access uses held directory FDs
+and no-follow directory traversal. The supported Python symlink is a relative
+`python3.<minor>` name inside the admitted `usr/bin` directory. Program bytes
+must match the qualified reference program.
+
+The held configuration and data directories must match their actual retained
+host directories. The named run directory and its private socket must still
+match the client endpoint. An actual FLOCK WRITE record and the peer's matching
+locked FD are required. `/proc/locks` alone retains the acquisition PID after
+an inherited descriptor transfer, so it cannot establish the current holder.
+The observer checks `fdinfo` and FD-backed file identity without opening or
+duplicating the actor's open file description.
+
+Each authenticated request repeats the full active frame before and after use.
+Only nondecreasing uptime and legitimate data-directory timestamp and size
+changes are excluded from equality. Directory backing, numeric ownership,
+permissions, service identity and the configuration file remain fixed.
+Closing file checks precede a final fast process check. A client refuses use
+after its lease context closes. No application EX or host database bytes,
+SQLite header or SQL are read while the actor runs.
+
+Results contain the authenticated instance identity, record count and records
+hash. They omit record values and credentials. `application_read_verified`
+describes this read; `application_quiesced` is false. All lifecycle, mutation,
+rebuild, restore and backup flags remain false. A successful read does not
+qualify write acceptance or application rebuild.
+
+Internal lifecycle code can use `_session_leased` while retaining the real pair
+EX and both native SH scopes. Its explicit append method is unavailable through
+the read-only Ansible boundary. A lifecycle controller must own a permanent
+dispatch claim before calling it. After sending, failures are unknown outcomes,
+not permission to replay. No native writer lifecycle has been qualified yet.
+
+Local tests separate modeled native/process admission from real directory,
+program, socket and lock observations. They reproduce endpoint replacement,
+late process changes and inherited-descriptor errors. Native activation and the
+claimed write/read-back/stop/SQL sequence remain separate acceptance work.
 
 ## Retained OS startup controller (developing)
 
