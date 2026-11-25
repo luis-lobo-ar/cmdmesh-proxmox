@@ -22,6 +22,13 @@ AGE = os.environ.get("CMDMESH_AGE") or shutil.which("age")
 KEYGEN = os.environ.get("CMDMESH_AGE_KEYGEN") or shutil.which("age-keygen")
 
 
+def process_state(path):
+    try:
+        return path.read_text().rpartition(") ")[2].split()[0]
+    except FileNotFoundError:
+        return None
+
+
 @unittest.skipUnless(
     AGE and KEYGEN, "provide standard age and age-keygen for real crypto tests"
 )
@@ -433,8 +440,7 @@ class StreamTests(unittest.TestCase):
         self.assertEqual(failed.exception.code, "persistence-stream-group-not-closed")
         self.assertTrue(failed.exception.group_stopped)
         path = Path("/proc") / marker.read_text() / "stat"
-        if path.exists():
-            self.assertEqual(path.read_text().rpartition(") ")[2].split()[0], "Z")
+        self.assertIn(process_state(path), (None, "Z"))
 
     def test_parent_death_after_arming_cannot_launch_the_producer(self):
         marker = self.root / "producer-ran"
@@ -469,13 +475,9 @@ class StreamTests(unittest.TestCase):
         armed = json.loads(self.journal.read_bytes())
         path = Path("/proc") / str(armed["worker_pid"]) / "stat"
         end = time.monotonic() + 3
-        while path.exists() and time.monotonic() < end:
-            row = path.read_text().rpartition(") ")[2].split()
-            if row[0] == "Z":
-                break
+        while process_state(path) not in (None, "Z") and time.monotonic() < end:
             time.sleep(0.02)
-        if path.exists():
-            self.assertEqual(path.read_text().rpartition(") ")[2].split()[0], "Z")
+        self.assertIn(process_state(path), (None, "Z"))
         self.assertFalse(marker.exists())
         self.assertEqual(self.output.stat().st_size, 0)
 
