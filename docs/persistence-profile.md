@@ -933,13 +933,13 @@ Only guard1063 and image helper21bd are executable inputs. The profile supports
 the reference Ubuntu/amd64, local2GiB, memory512MiB, oneCPU/no-swap configuration.
 Unknown sources, unsupported profiles and `active_writer` refuse before collection.
 
-The collector admits the host and API identity before guest execution. It holds
-the existing retained-pair EX mutex and both old/current native config SH leases.
-It checks actual kernel identity, target references and guest bind backing, then
-the image/account and inactive, disabled application unit. It takes the real
-application configuration EX before lower retained-state checks and consistent
-SQLite inspection. It does not call the stopped collector or the image helper's
-retained-path-absence checks.
+The collector admits the host and API identity before retained-file access or
+guest execution. It holds the existing retained-pair EX mutex and both old/current
+native config SH leases. After API admission, it takes the real application
+configuration EX. It checks actual kernel identity, target references, guest bind
+backing, and the image/account and inactive, disabled application unit. Lower
+retained-state checks and consistent SQLite inspection use the same EX. It does
+not call the stopped collector or the image helper's retained-path-absence checks.
 
 Closing observations repeat image, API, kernel, binds, ownership, references and
 SQL. Only nondecreasing typed uptime and the root image's normal mtime/ctime are
@@ -956,6 +956,16 @@ commands or local source-path access. The guest probe executes the pinned lower
 image helpers and returns hashes and metadata, never shadow contents or tokens.
 It rescans the account/process state after its closing environment and unit reads.
 The Ansible boundary redacts input invocation and unexpected errors.
+
+The public collector acquires the pair mutex, both native guest read leases, and
+the application configuration EX before runtime inspection. Internal lifecycle
+controllers can use the private `_collect_leased` worker while retaining those
+same leases across startup. The worker never acquires or releases the caller's
+locks. It verifies the configuration bytes and guest binding before inspection.
+The public collector closes every lock context after the worker returns, so late
+configuration or lease changes still refuse the result. No CLI, MCP, or Ansible
+argument can bypass lock acquisition. Real file-lock and SQLite tests cover the
+worker contract. Native startup qualification remains separate.
 
 `os_runtime_verified` and `application_quiesced` describe this observation only.
 Mutation, boot-operation, rebuild, restore and backup flags remain false. Native
@@ -1005,3 +1015,104 @@ failure marker. No automatic rollback is attempted. The verified result covers
 metadata only; boot, rebuild and restore remain false. Native reconciliation is
 not yet qualified. The initial bootstrap's legacy guard behavior remains unchanged
 here; fresh defaults require their own corrected-guard qualification before release.
+
+## Current-guest lifecycle transport (developing)
+
+`persistence_guest_api.GuestBinding` binds one current LXC to its node, numeric
+guest ID, machine fingerprint, CA fingerprint, and leaf fingerprint. A lifecycle
+controller can construct this binding directly from an admitted source. It does
+not need a historical source-to-recipient request.
+
+`post_guest_action(binding, action)` accepts only `start` and graceful `shutdown`.
+It checks the local root identity, node, and machine before authentication. It
+uses the existing verified TLS transport to the fixed local PVE endpoint. Shutdown
+has a fixed timeout and disables forced stopping. No caller supplies an endpoint,
+extra parameters, or a retry policy. Task parsing binds the operation, node,
+guest ID, and native process identity. Task inspection retains the qualified
+systemd255 warning outcome and refuses unknown warnings or incomplete logs.
+
+The original recipient API delegates to this shared transport after its existing
+admission checks. Its private create path accepts only the fixed stopped,
+isolated recipient parameters. This extraction does not add a lifecycle command
+to the CLI or MCP interface. Controllers still own durable dispatch claims,
+configuration lock handoff, runtime checks, and uncertainty after a lost reply.
+Transport tests establish neither native start nor application recovery.
+
+## Retained OS startup controller (developing)
+
+`persistence_retained_boot` prepares and controls one OS-only start after the
+corrected stopped-owner handoff. The reference application must remain disabled
+and inactive. This library does not start a writer, qualify an application
+rebuild, recover an independent backup, or change the retired guest.
+
+`prepare(reconciliation_raw, reconciliation_sha256, completion_sha256,
+source_sha256, image_profile)` requires separately trusted hashes of the accepted
+reconciliation preparation, completion, and full stopped Source3 observation.
+The image profile uses the same known helpers and resource limits as the runtime
+inspector. Preparation validates the existing reconciliation, then repeats the
+stopped source under pair EX and both native SH leases. It binds the image,
+controls, and raw owner journals without creating files or claims. All source
+contexts finish before preparation returns. Its final history closure checks
+file identity, timestamps, permissions, directory identity, and membership after
+slow reads and probes. A decoder alone does not admit execution.
+
+`boot(prepared_bytes, trusted_sha256, timeout_seconds=240)` repeats preparation
+and requires canonical equality before it consumes a permanent GUID-pair claim.
+It finishes another stopped-source context before taking the real application
+configuration EX. The application EX and pair EX remain held through startup and
+verification. The direct guard result is durable before qualification or refusal.
+
+The controller archives and fsyncs only the current target's two
+`99-cmdmesh-retired-prestart.conf` files, then removes those files. It preserves
+the retired guest's denials and both guests' `50-cmdmesh-reference.conf` files,
+the owner record, policies, and prior journals. It
+checks the loaded target declaration before dispatch. Every target native SH
+lease is closed before POST and task polling. The retired native SH remains held.
+The controller reacquires target SH after terminal native success and inspects
+runtime through the private worker without acquiring pair or application locks
+again. The start request uses the fixed verified current-guest transport once.
+
+Success requires the qualified native outcome, task identity and dispatch time,
+actual successful pre-start execution in the operation's time range, runtime
+identity, inactive application, exact original credentials, and consistent
+original SQLite facts. Unknown warnings, timeouts, lost replies, changed history,
+and failed runtime proofs leave the claim consumed. Completion is fsynced, its
+bytes are verified, and a second runtime observation closes changes during that
+write. Final file and directory checks also bind the new runtime profile. No
+automatic rollback, repeat POST, or claim deletion is performed.
+
+The result's `journal_files` maps each claimed record to its native path, raw-byte
+hash, and file identity. Its canonical hash is `phase_journal_sha256`. A consumer
+can recompute that digest and compare separately captured raw bytes with every
+recorded hash. Status requires the recorded descriptor to match fresh native
+metadata. The descriptor contains no credential contents.
+
+`status(prepared_bytes, trusted_sha256)` requalifies an existing completed start.
+It checks journal semantics, hashes, task state, application facts, and current
+runtime. Only typed nondecreasing uptime can differ from the completed frame.
+It creates no files, takes no lifecycle action, and never calls a stopped observer
+after startup. Failed or uncertain claims refuse successful status. Keep their
+evidence for a separate reconciliation rather than rerunning `boot`.
+
+These interfaces are under development. Native startup and the normal executor
+trial still require qualification. Local tests
+use real private files, locks, SQLite, and modeled native providers. They do not
+establish disaster recovery or production readiness.
+
+### Ansible startup boundary
+
+`lxc_persistence_retained_boot` exposes `prepare`, `boot`, and `status`. The
+preparation inputs are the canonical reconciliation document, its trusted hash,
+the trusted completion and Source3 hashes, and `image_profile`. Boot and status
+take only the canonical startup preparation and its separately trusted hash.
+Use `ansible-doc cmdmesh.proxmox.lxc_persistence_retained_boot` for the complete
+argument reference and read-only examples.
+
+An actual boot requires `allow_changes: true`. In check mode, boot repeats the
+exact preparation and reports a proposed change without creating a claim,
+removing a denial, dispatching a task, or claiming runtime success. Status remains
+read-only in either mode. Input invocation and unexpected exceptions are withheld;
+safe preparation hashes remain exact. Failure reports possible effects for an
+allowed boot and clears every verified flag. Preserve consumed claims and partial
+journals rather than retrying an uncertain start. Native normal-executor
+qualification remains pending.

@@ -2,7 +2,7 @@
 
 import copy
 import builtins
-from contextlib import closing, redirect_stdout
+from contextlib import ExitStack, closing, redirect_stdout
 import fcntl
 import importlib
 import io
@@ -554,6 +554,7 @@ class QuiescedCollectionTests(unittest.TestCase):
             )
         )
         self.locked_config = runtime.observe.locked_config
+        self.locked_pair = pair.locked_pair
         self.mocks = {}
         providers = {
             "reference_facts": lambda request: self.provide("reference"),
@@ -603,7 +604,7 @@ class QuiescedCollectionTests(unittest.TestCase):
             with self.assertRaises(config_lock.ConfigLockError):
                 config_lock.require_write_available(vmid)
         with self.assertRaises(runtime.state.PersistenceError):
-            with pair.locked_pair(self.request["policy"]["datasets"]):
+            with self.locked_pair(self.request["policy"]["datasets"]):
                 self.fail("pair mutex was not retained")
         if application is not None:
             with self.config.open("rb") as fd:
@@ -675,6 +676,7 @@ class QuiescedCollectionTests(unittest.TestCase):
             self.collect()
         self.mocks["collect"].assert_not_called()
         self.mocks["guest_image"].assert_not_called()
+        self.mocks["locked_config"].assert_not_called()
         self.mocks["read_database"].assert_not_called()
         self.released()
 
@@ -685,6 +687,70 @@ class QuiescedCollectionTests(unittest.TestCase):
                 self.collect()
         self.mocks["read_database"].assert_not_called()
         self.mocks["retained_facts"].assert_not_called()
+        self.released()
+
+    def test_private_worker_uses_and_preserves_the_callers_real_leases(self):
+        guard, _, binding = runtime.load_profile(self.request, self.profile)
+        with pair.locked_pair(self.request["policy"]["datasets"]), ExitStack() as held:
+            for vmid in self.vmids:
+                held.enter_context(config_lock.read_guest(vmid))
+            raw = held.enter_context(
+                self.locked_config(self.config, os.geteuid(), os.getegid())
+            )
+            with mock.patch.object(
+                pair, "locked_pair", side_effect=AssertionError("recursive pair lock")
+            ), mock.patch.object(
+                config_lock,
+                "read_guest",
+                side_effect=AssertionError("recursive native lock"),
+            ), mock.patch.object(
+                runtime.observe,
+                "locked_config",
+                side_effect=AssertionError("recursive application lock"),
+            ):
+                value = runtime._collect_leased(
+                    self.request,
+                    self.profile,
+                    guard,
+                    binding,
+                    copy.deepcopy(self.value["host"]),
+                    raw,
+                )
+            self.scopes(True)
+            self.assertEqual(value["application"], self.value["application"])
+            runtime.validate(self.request, self.profile, "os_quiesced", value)
+        self.released()
+
+    def test_private_worker_wrong_configuration_refuses_before_any_sql(self):
+        guard, _, binding = runtime.load_profile(self.request, self.profile)
+        with pair.locked_pair(self.request["policy"]["datasets"]), ExitStack() as held:
+            for vmid in self.vmids:
+                held.enter_context(config_lock.read_guest(vmid))
+            held.enter_context(
+                self.locked_config(self.config, os.geteuid(), os.getegid())
+            )
+            with self.assertRaisesRegex(ValueError, "configuration-changed"):
+                runtime._collect_leased(
+                    self.request,
+                    self.profile,
+                    guard,
+                    binding,
+                    copy.deepcopy(self.value["host"]),
+                    b"wrong application bytes",
+                )
+            self.scopes(True)
+        self.mocks["read_database"].assert_not_called()
+        self.released()
+
+    def test_public_collector_closes_configuration_after_the_worker_returns(self):
+        def inspect(*args):
+            self.scopes(True)
+            self.config.write_bytes(b"late unmanaged configuration change")
+            return copy.deepcopy(self.value)
+
+        with mock.patch.object(runtime, "_collect_leased", side_effect=inspect):
+            with self.assertRaisesRegex(ValueError, "configuration-changed"):
+                self.collect()
         self.released()
 
     def test_late_reference_change_refuses_and_releases_all_locks(self):

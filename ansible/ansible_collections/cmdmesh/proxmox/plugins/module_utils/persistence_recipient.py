@@ -6,20 +6,16 @@ native task and never posts again. This is not application rebuild acceptance.
 """
 
 import hashlib
-import http.client
 import os
 from pathlib import Path
 import re
-import socket
-import ssl
 import stat
-import subprocess
 import time
-from urllib.parse import quote, urlencode
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_backup as backup,
     persistence_observe as observe,
+    persistence_guest_api as guest_api,
     persistence_state as state,
 )
 
@@ -30,8 +26,8 @@ PROFILE = {
     "document_type": "cmdmesh.proxmox.persistence.recipient-runtime",
     "schema_version": 1,
 }
-WARNING = "WARN: Systemd 255 detected. You may need to enable nesting."
-TICKET_PROGRAM = "PVE::Cluster::cfs_update(); die 'auth key not current' unless PVE::AccessControl::check_authkey(1); print JSON::PP::encode_json({ticket=>PVE::AccessControl::assemble_ticket('root@pam'),csrf=>PVE::AccessControl::assemble_csrf_prevention_token('root@pam')});"
+WARNING = guest_api.WARNING
+TICKET_PROGRAM = guest_api.TICKET_PROGRAM
 
 
 def require(value, code):
@@ -479,37 +475,19 @@ def claim(prepared, trusted):
     return directory, intent_sha
 
 
-def parse_upid(request, upid, *, kind="vzcreate"):
-    require(kind in {"vzcreate", "vzstart", "vzshutdown"}, "native-task-operation")
-    node = request["source_request"]["source"]["selector"]["node"]
-    vmid = str(request["target"]["vmid"])
-    match = (
-        re.fullmatch(
-            r"UPID:"
-            + re.escape(node)
-            + r":([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):([0-9A-Fa-f]{8,16}):"
-            + kind
-            + ":"
-            + vmid
-            + r":root@pam:",
-            upid,
-        )
-        if type(upid) is str
-        else None
+def _api_binding(request):
+    source = request["source_request"]["source"]
+    return guest_api.GuestBinding(
+        node=source["selector"]["node"],
+        vmid=request["target"]["vmid"],
+        machine_id_sha256=source["host_profile"]["machine_id_sha256"],
+        ca_sha256=source["host_profile"]["ca_certificate_sha256"],
+        leaf_sha256=source["host_profile"]["leaf_certificate_sha256"],
     )
-    require(match is not None, "native-task-target")
-    pid, pstart, started = (int(part, 16) for part in match.groups())
-    require(pid > 1 and pstart > 0 and started > 0, "native-task-identity")
-    return {
-        "upid": upid,
-        "node": node,
-        "pid": pid,
-        "pstart": pstart,
-        "starttime": started,
-        "type": kind,
-        "id": vmid,
-        "user": "root@pam",
-    }
+
+
+def parse_upid(request, upid, *, kind="vzcreate"):
+    return guest_api.parse_upid(_api_binding(request), upid, kind=kind)
 
 
 def post_create(request):
@@ -524,88 +502,10 @@ def post_guest_action(request, action):
 def _post(request, action):
     validate_request(request)
     require(action in {"create", "start", "shutdown"}, "native-operation")
-    source = request["source_request"]["source"]
-    node = source["selector"]["node"]
-    path = "/api2/json/nodes/" + node + "/lxc"
-    parameters = create_request(request) if action == "create" else {}
-    kind = {"create": "vzcreate", "start": "vzstart", "shutdown": "vzshutdown"}[action]
-    if action == "shutdown":
-        parameters = {"timeout": "60", "forceStop": "0"}
-    if action != "create":
-        path += "/" + str(request["target"]["vmid"]) + "/status/" + action
-    ca, _ = observe.read_regular("/etc/pve/pve-root-ca.pem", 65536)
-    cert, _ = observe.read_regular("/etc/pve/nodes/" + node + "/pve-ssl.pem", 65536)
-    leaf = ssl.PEM_cert_to_DER_cert(cert.decode("ascii"))
-    require(
-        state.sha256(ssl.PEM_cert_to_DER_cert(ca.decode("ascii")))
-        == source["host_profile"]["ca_certificate_sha256"]
-        and state.sha256(leaf) == source["host_profile"]["leaf_certificate_sha256"],
-        "certificates-changed",
-    )
-    context = ssl.create_default_context(cadata=ca.decode("ascii"))
-    require(
-        context.verify_mode == ssl.CERT_REQUIRED and context.check_hostname,
-        "tls-policy",
-    )
-    auth = subprocess.run(
-        ["/usr/bin/perl", "-MPVE::AccessControl", "-MJSON::PP", "-e", TICKET_PROGRAM],
-        stdin=subprocess.DEVNULL,
-        capture_output=True,
-        timeout=20,
-        env=observe.ENV,
-        umask=0o077,
-    )
-    require(
-        auth.returncode == 0 and not auth.stderr and 0 < len(auth.stdout) <= 16384,
-        "local-authentication",
-    )
-    credentials = observe.decode(auth.stdout)
-    state.keys(credentials, {"ticket", "csrf"})
-    require(
-        state.matches(r"PVE:root@pam:[^\r\n\s]+", credentials["ticket"])
-        and state.matches(r"[^\r\n\s]+", credentials["csrf"]),
-        "local-authentication",
-    )
-    try:
-        with socket.create_connection(("127.0.0.1", 8006), timeout=20) as raw:
-            with context.wrap_socket(raw, server_hostname=node) as secure:
-                require(
-                    secure.getpeercert(binary_form=True) == leaf
-                    and secure.version() in {"TLSv1.2", "TLSv1.3"},
-                    "tls-peer",
-                )
-                connection = http.client.HTTPConnection(node, 8006, timeout=20)
-                connection.sock = secure
-                connection.request(
-                    "POST",
-                    path,
-                    urlencode(parameters),
-                    {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Accept": "application/json",
-                        "Connection": "close",
-                        "Cookie": "PVEAuthCookie="
-                        + quote(credentials["ticket"], safe=""),
-                        "CSRFPreventionToken": credentials["csrf"],
-                    },
-                )
-                response = connection.getresponse()
-                body = response.read(262145)
-                require(
-                    response.status == 200
-                    and response.getheader("Content-Type", "").startswith(
-                        "application/json"
-                    )
-                    and len(body) <= 262144,
-                    "create-acknowledgement",
-                )
-                data = observe.decode(body)
-                state.keys(data, {"data"})
-                parse_upid(request, data["data"], kind=kind)
-                result = {"upid": data["data"], "tls_verified": True}
-    finally:
-        credentials = auth = None
-    return result
+    binding = _api_binding(request)
+    if action == "create":
+        return guest_api._post_bound(binding, action, create_request(request))
+    return guest_api._post_bound(binding, action)
 
 
 def task_state(request, upid, *, kind="vzcreate"):
@@ -633,41 +533,7 @@ def task_state(request, upid, *, kind="vzcreate"):
 
 
 def native_outcome(task, log):
-    require(type(log) is list and len(log) < 100, "native-log-incomplete")
-    for index, row in enumerate(log, 1):
-        require(
-            type(row) is dict
-            and set(row) == {"n", "t"}
-            and type(row["n"]) is int
-            and row["n"] == index
-            and type(row["t"]) is str
-            and len(row["t"]) <= 16384,
-            "native-log-shape",
-        )
-    if task["status"] == "running":
-        return {"native_success": None, "accepted": False, "warning_count": 0}
-    messages = [row["t"] for row in log]
-    warnings = [line for line in messages if line.startswith(("WARN:", "WARNING:"))]
-    errors = any(line.startswith(("ERROR:", "TASK ERROR:")) for line in messages)
-    code = task["exitstatus"]
-    accepted = (
-        bool(messages)
-        and not errors
-        and (
-            (code == "OK" and not warnings and messages[-1] == "TASK OK")
-            or (
-                code == "WARNINGS: 1"
-                and warnings == [WARNING]
-                and messages[-1] == "TASK WARNINGS: 1"
-            )
-        )
-    )
-    return {
-        "native_success": code == "OK"
-        or re.fullmatch(r"WARNINGS: [1-9][0-9]*", code) is not None,
-        "accepted": accepted,
-        "warning_count": len(warnings),
-    }
+    return guest_api.native_outcome(task, log)
 
 
 def validate_target_config(request, config):
