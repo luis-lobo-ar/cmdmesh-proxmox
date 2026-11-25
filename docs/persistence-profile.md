@@ -1037,3 +1037,57 @@ isolated recipient parameters. This extraction does not add a lifecycle command
 to the CLI or MCP interface. Controllers still own durable dispatch claims,
 configuration lock handoff, runtime checks, and uncertainty after a lost reply.
 Transport tests establish neither native start nor application recovery.
+
+## Retained OS startup controller (developing)
+
+`persistence_retained_boot` prepares and controls one OS-only start after the
+corrected stopped-owner handoff. The reference application must remain disabled
+and inactive. This library does not start a writer, qualify an application
+rebuild, recover an independent backup, or change the retired guest.
+
+`prepare(reconciliation_raw, reconciliation_sha256, completion_sha256,
+source_sha256, image_profile)` requires separately trusted hashes of the accepted
+reconciliation preparation, completion, and full stopped Source3 observation.
+The image profile uses the same known helpers and resource limits as the runtime
+inspector. Preparation validates the existing reconciliation, then repeats the
+stopped source under pair EX and both native SH leases. It binds the image,
+controls, and raw owner journals without creating files or claims. All source
+contexts finish before preparation returns. Its final history closure checks
+file identity, timestamps, permissions, directory identity, and membership after
+slow reads and probes. A decoder alone does not admit execution.
+
+`boot(prepared_bytes, trusted_sha256, timeout_seconds=240)` repeats preparation
+and requires canonical equality before it consumes a permanent GUID-pair claim.
+It finishes another stopped-source context before taking the real application
+configuration EX. The application EX and pair EX remain held through startup and
+verification. The direct guard result is durable before qualification or refusal.
+
+The controller archives and fsyncs only the current target's two exact99 denial
+files, then removes those two files. It preserves the retired guest's denials and
+both guests'50 references, the owner record, policies, and prior journals. It
+checks the loaded target declaration before dispatch. Every target native SH
+lease is closed before POST and task polling. The retired native SH remains held.
+The controller reacquires target SH after terminal native success and inspects
+runtime through the private worker without acquiring pair or application locks
+again. The start request uses the fixed verified current-guest transport once.
+
+Success requires the qualified native outcome, task identity and dispatch time,
+actual successful pre-start execution in the operation's time range, runtime
+identity, inactive application, exact original credentials, and consistent
+original SQLite facts. Unknown warnings, timeouts, lost replies, changed history,
+and failed runtime proofs leave the claim consumed. Completion is fsynced, its
+bytes are verified, and a second runtime observation closes changes during that
+write. Final file and directory checks also bind the new runtime profile. No
+automatic rollback, repeat POST, or claim deletion is performed.
+
+`status(prepared_bytes, trusted_sha256)` requalifies an existing completed start.
+It checks journal semantics, hashes, task state, application facts, and current
+runtime. Only typed nondecreasing uptime can differ from the completed frame.
+It creates no files, takes no lifecycle action, and never calls a stopped observer
+after startup. Failed or uncertain claims refuse successful status. Keep their
+evidence for a separate reconciliation rather than rerunning `boot`.
+
+These are library interfaces under development. Native startup, the Ansible
+boundary, and the normal executor trial still require qualification. Local tests
+use real private files, locks, SQLite, and modeled native providers. They do not
+establish disaster recovery or production readiness.
