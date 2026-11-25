@@ -1038,6 +1038,51 @@ to the CLI or MCP interface. Controllers still own durable dispatch claims,
 configuration lock handoff, runtime checks, and uncertainty after a lost reply.
 Transport tests establish neither native start nor application recovery.
 
+## Local process authentication (developing)
+
+`unix_peer` performs one bounded AF_UNIX request to an admitted Linux process.
+The caller supplies an admitted socket-directory FD and `ProcessIdentity`.
+The process identity includes PID, birth time, PID and mount namespaces, numeric
+credentials, namespace PID mapping, root, executable, arguments and cgroup.
+This identity is evidence about a process. The caller must still verify its
+host, guest, service, program, retained mounts and socket-directory backing.
+
+`exchange` opens a pidfd and a process-directory FD. It requires a private
+directory and socket, then checks actual `SO_PEERCRED` before calling the
+credential supplier. It repeats process and socket checks before sending and
+after receiving. An exec or process exit invalidates the exchange. Supplier
+exceptions return a static error without private exception text.
+
+The protocol permits one newline-terminated request and one response. Request
+size, response size and total network duration are bounded. The client never
+retries. A lost or invalid response after sending leaves the operation outcome
+unknown. A caller must retain its dispatch claim and reconcile that outcome.
+The client cannot make an application write and its completion record atomic.
+
+`persistence_ledger_api` uses this transport for the reference application's
+authenticated read and idempotent append. It reads the original configuration
+through a caller-admitted directory FD after peer admission. It verifies the
+configuration hash, identity, permissions and file identity again after the
+response. The token remains inside the process and is excluded from results.
+The client takes no application EX lock and reads no host SQLite state.
+Read results include a records hash compatible with the stopped SQL observer.
+Invalid, uncertain or conflicting responses refuse without automatic retries.
+The decoded response must not contain the original token, including a token
+encoded with JSON escapes. Such a response refuses without returning its data.
+
+The existing image validator and guest probe accept an explicit `writer_pid`
+for the later active-writer controller. This requires an active, running unit
+with exactly that MainPID and exactly that UID/GID process. All artifact,
+account, mapping, environment and disabled-at-startup checks still apply.
+The default quiesced collector supplies no writer PID and still refuses active
+frames. An active image frame alone does not qualify a socket peer or rebuild.
+
+Local tests use real AF_UNIX processes, a real exec, actual peer credentials and
+the pinned reference application. They prove protocol and error behavior only.
+There is no active-writer lifecycle command or native rebuild acceptance yet.
+The reference application must remain stopped until its separate lifecycle
+controller, process admission, claims and stopping behavior are qualified.
+
 ## Retained OS startup controller (developing)
 
 `persistence_retained_boot` prepares and controls one OS-only start after the

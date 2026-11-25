@@ -859,9 +859,16 @@ class QuiescedCollectionTests(unittest.TestCase):
     "provide the pinned corrected recipe source",
 )
 class GuestImageProgramTests(unittest.TestCase):
-    def run_program(self, *, fault=None, source=None):
+    def run_program(self, *, fault=None, source=None, writer_pid=None):
         request, profile, value = model()
         frame = value["image"]
+        if writer_pid is not None:
+            frame["unit"].update(
+                ActiveState="active", SubState="running", MainPID=str(writer_pid)
+            )
+            frame["accounts"].update(
+                uid_processes=[writer_pid], gid_processes=[writer_pid]
+            )
         program_raw = (
             Path(os.environ["CMDMESH_FIXED_HANDOFF_GUARD_SOURCE"]).parent / "ledger.py"
         ).read_bytes()
@@ -935,7 +942,8 @@ class GuestImageProgramTests(unittest.TestCase):
         ), mock.patch.object(
             sys,
             "argv",
-            ["guest-probe", profile["image_python"] if source is None else source],
+            ["guest-probe", profile["image_python"] if source is None else source]
+            + ([] if writer_pid is None else [str(writer_pid)]),
         ), mock.patch(
             "subprocess.run",
             side_effect=AssertionError(
