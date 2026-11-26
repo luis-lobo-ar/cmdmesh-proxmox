@@ -1632,6 +1632,46 @@ The developing Ansible boundary below exposes its finite actions. Local SDK
 tests use real filesystem locks and modeled PVE responses. Native shutdown and
 restart remain unqualified.
 
+The current ACK timing rule has a known qualification defect: it measures task
+time against a dispatch record written before closing admission work. A fresh
+task after 61 seconds of legitimate closing work can fail the 60-second bound,
+after the native request already took effect. Slow-closing SDK integration is
+still under development; do not use a wider bound to
+retroactively certify an uncertain operation. Preserve its journal and qualify
+worker fencing/current state before metadata-only resolution.
+
+The developing `persistence_owner_ack` codec separates an observed response from
+a certified ACK. It retains bounded size/hash evidence for arbitrary responses,
+and raw response JSON only when the complete body contains exactly one
+UPID-shaped `data` value. Tickets, CSRF values, headers, arbitrary JSON fields and
+partial bodies are not copied into plaintext observations. Its pure
+`validate_ack(binding, action, dispatch_sha256, expected_epoch, observation)` binds
+the expected action, guest, dispatch, pinned TLS peer and manager epoch. It reads
+no current clock, filesystem or native API.
+
+Each recorded clock sample brackets a wall-clock read with two monotonic reads.
+Qualification requires ordered samples, no more than 100 ms uncertainty within
+either individual sample, and wall elapsed time inside the measured monotonic
+elapsed bounds. Task timestamps have integer-second precision; that task-second
+interval must overlap the recorded request interval. The 100 ms sample limit is
+an explicit uncertainty policy, not a delay or a wider bound from early dispatch.
+An uncertain or missing receive sample can remain forensic evidence, but cannot
+certify the ACK.
+
+`persistence_guest_api.post_owner_guest_action` uses the existing finite pinned
+TLS/PAM transport for one start or graceful-shutdown request. It samples send
+clocks after authentication and TLS setup, then receive clocks after the bounded
+body read, before native semantic validation. Redirects, partial responses and
+missing receive clocks return unqualified observations without a second POST.
+The existing `post_guest_action` contract and its return fields remain unchanged.
+Both transport paths now refuse a short declared Content-Length body. Complete
+chunked bodies require the terminal chunk, and connection-close bodies require
+EOF. A valid JSON prefix alone cannot certify a response.
+This leaf API performs no journal writes, resolution or retry. It is not yet
+integrated into a new ordered SDK/profile. SDK integration and explicit legacy
+authority handoff remain unqualified. Do not call the leaf to bypass a pending
+lifecycle operation.
+
 | SDK function | Contract |
 | --- | --- |
 | `genesis_sha256(checkpoint)` | Computes the proposed initial head without filesystem or network access. |

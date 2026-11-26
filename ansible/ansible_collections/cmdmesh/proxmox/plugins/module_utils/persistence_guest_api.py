@@ -9,10 +9,12 @@ the controller's responsibility. This module never retries a POST.
 from dataclasses import dataclass
 import http.client
 import os
+from pathlib import Path
 import re
 import socket
 import ssl
 import subprocess
+import time
 from urllib.parse import quote, urlencode
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
@@ -111,6 +113,55 @@ def post_guest_action(binding, action):
     return _post_bound(binding, action)
 
 
+def post_owner_guest_action(binding, action, dispatch_sha256, expected_epoch):
+    """Send one fixed owner action and return an unqualified response observation."""
+    from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+        persistence_owner_ack as owner_ack,
+    )
+
+    require(
+        type(action) is str and action in {"start", "shutdown"},
+        "native-guest-operation",
+    )
+    state.digest(dispatch_sha256)
+    owner_ack.epoch_shape(expected_epoch)
+    check_host(binding)
+    return _post_bound(
+        binding,
+        action,
+        owner_context={
+            "dispatch_sha256": dispatch_sha256,
+            "epoch": expected_epoch.copy(),
+        },
+    )
+
+
+def _owner_clock():
+    from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+        persistence_owner_ack as owner_ack,
+    )
+
+    def epoch():
+        return {
+            "boot_id": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+            "mount_namespace": os.readlink("/proc/self/ns/mnt"),
+        }
+
+    before = epoch()
+    monotonic_before = time.monotonic_ns()
+    wall = time.time_ns()
+    monotonic_after = time.monotonic_ns()
+    owner_ack.require(before == epoch(), "sample-epoch-changed")
+    value = {
+        "epoch": before,
+        "wall_ns": wall,
+        "monotonic_before_ns": monotonic_before,
+        "monotonic_after_ns": monotonic_after,
+    }
+    owner_ack.clock_shape(value)
+    return value
+
+
 def _parameters(binding, action, supplied):
     require(action in {"create", "start", "shutdown"}, "native-operation")
     if action != "create":
@@ -160,9 +211,18 @@ def _parameters(binding, action, supplied):
     return dict(supplied)
 
 
-def _post_bound(binding, action, create_parameters=None):
+def _post_bound(binding, action, create_parameters=None, *, owner_context=None):
     require(type(binding) is GuestBinding, "native-task-target")
     parameters = _parameters(binding, action, create_parameters)
+    if owner_context is not None:
+        from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
+            persistence_owner_ack as owner_ack,
+        )
+
+        state.keys(owner_context, {"dispatch_sha256", "epoch"})
+        require(action in {"start", "shutdown"}, "native-guest-operation")
+        state.digest(owner_context["dispatch_sha256"])
+        owner_ack.epoch_shape(owner_context["epoch"])
     node = binding.node
     path = "/api2/json/nodes/" + node + "/lxc"
     kind = {"create": "vzcreate", "start": "vzstart", "shutdown": "vzshutdown"}[action]
@@ -203,42 +263,92 @@ def _post_bound(binding, action, create_parameters=None):
     try:
         with socket.create_connection(("127.0.0.1", 8006), timeout=20) as raw:
             with context.wrap_socket(raw, server_hostname=node) as secure:
+                peer = secure.getpeercert(binary_form=True)
+                protocol = secure.version()
                 require(
-                    secure.getpeercert(binary_form=True) == leaf
-                    and secure.version() in {"TLSv1.2", "TLSv1.3"},
+                    peer == leaf and protocol in {"TLSv1.2", "TLSv1.3"},
                     "tls-peer",
                 )
                 connection = http.client.HTTPConnection(node, 8006, timeout=20)
                 connection.sock = secure
-                connection.request(
-                    "POST",
-                    path,
-                    urlencode(parameters),
-                    {
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Accept": "application/json",
-                        "Connection": "close",
-                        "Cookie": "PVEAuthCookie="
-                        + quote(credentials["ticket"], safe=""),
-                        "CSRFPreventionToken": credentials["csrf"],
-                    },
-                )
-                response = connection.getresponse()
-                body = response.read(262145)
-                require(
-                    response.status == 200
-                    and response.getheader("Content-Type", "").startswith(
-                        "application/json"
+                headers = {
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                    "Connection": "close",
+                    "Cookie": "PVEAuthCookie=" + quote(credentials["ticket"], safe=""),
+                    "CSRFPreventionToken": credentials["csrf"],
+                }
+                encoded_parameters = urlencode(parameters)
+                if owner_context is not None:
+                    send = _owner_clock()
+                    owner_ack.clock_shape(send)
+                    owner_ack.require(
+                        send["epoch"] == owner_context["epoch"], "epoch-changed"
                     )
-                    and len(body) <= 262144,
-                    "create-acknowledgement",
-                )
-                data = observe.decode(body)
-                state.keys(data, {"data"})
-                parse_upid(binding, data["data"], kind=kind)
-                result = {"upid": data["data"], "tls_verified": True}
+                    owner_ack.require(
+                        0
+                        <= send["monotonic_after_ns"] - send["monotonic_before_ns"]
+                        <= owner_ack.MAX_SAMPLE_UNCERTAINTY_NS,
+                        "sample-uncertainty",
+                    )
+                status = content_type = body = None
+                complete = True
+                try:
+                    connection.request("POST", path, encoded_parameters, headers)
+                    response = connection.getresponse()
+                    status = response.status
+                    content_type = response.getheader("Content-Type", "")
+                    body = response.read(262145)
+                    if response.length is None and not response.chunked:
+                        complete = False
+                        if len(body) < 262145:
+                            tail = response.read(1)
+                            body += tail
+                            complete = not tail and response.isclosed()
+                    else:
+                        complete = (
+                            response.length == 0
+                            or (response.length is None and response.isclosed())
+                        ) and (not response.chunked or response.chunk_left is None)
+                except (OSError, http.client.HTTPException) as error:
+                    if owner_context is None:
+                        raise
+                    complete = False
+                    if isinstance(error, http.client.IncompleteRead):
+                        body = error.partial[:262145]
+                if owner_context is not None:
+                    try:
+                        receive = _owner_clock()
+                    except (OSError, ValueError):
+                        receive = None
+                    result = owner_ack.observe_response(
+                        binding,
+                        action,
+                        owner_context["dispatch_sha256"],
+                        send,
+                        receive,
+                        tls_verified=True,
+                        tls_peer_sha256=state.sha256(peer),
+                        tls_version=protocol,
+                        http_status=status,
+                        content_type=content_type,
+                        body=body,
+                        body_complete=complete,
+                    )
+                else:
+                    require(
+                        status == 200
+                        and complete
+                        and content_type.startswith("application/json")
+                        and len(body) <= 262144,
+                        "create-acknowledgement",
+                    )
+                    data = observe.decode(body)
+                    state.keys(data, {"data"})
+                    parse_upid(binding, data["data"], kind=kind)
+                    result = {"upid": data["data"], "tls_verified": True}
     finally:
-        credentials = auth = None
+        credentials = auth = headers = None
     return result
 
 
