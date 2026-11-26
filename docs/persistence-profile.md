@@ -1721,6 +1721,76 @@ combinations at runtime during the correction.
 Run the focused tests with
 `python -m unittest discover -s tests -p test_persistence_owner_request_journal.py -v`.
 
+The developing retirement path preserves the old pending HEAD and native/failure
+records. It will need a fixed per-pair barrier, a genuine fresh worker/current
+fence, and a separately accepted handoff before new-profile authority. It must
+not make an old lineage temporarily ready before retiring it.
+
+`test_persistence_owner_retirement_compatibility.py` probes the frozen old reader
+with injected fixture markers. It checks refusal for ready/pending/completed and
+resolution-aware histories, stale SDK preparations and status, partial markers,
+fresh-owner tombstones, unrelated-pair isolation and real child-process pair
+lock exclusion. These tests do not implement a durable publisher, qualify a
+native worker fence or authorize a migration.
+
+#### Retirement metadata utility (internal)
+
+`persistence_owner_retirement` implements the metadata sequence for a completed
+ordinary schema-3 prefix followed by one dispatched, failed, unknown resume.
+The final slot must contain exactly intent, dispatch and failure records, with
+no ACK, terminal, result, staging or orphan records. Other legacy layouts and
+fresh bootstrap are unsupported by this utility.
+
+The utility preserves the old pending HEAD and every original byte and file
+identity. Its dedicated reader also pins the shared legacy `runtime.json`,
+which is separate from the old exported basis, plus the stable identities of
+its directory and parent. Only the fixed per-pair marker
+is added to old membership. Unrelated pairs retain their shared runtime.
+
+| Internal function | Metadata behavior |
+| --- | --- |
+| `_prepare` | Reads and validates the blocked basis, latest accepted anchor and caller evidence references. Creates nothing. |
+| `_begin` | Exclusively claims H0 at the fixed per-pair handoff path. A partial or existing claim refuses replay. |
+| `_mark` | Exclusively writes `RETIRED-v4.json` in the old pair directory. Never changes old HEAD or invokes the legacy resolver. |
+| `_complete` | Records candidate H1 with the marker, unchanged history and caller closing-evidence references. |
+| `validate_handoff` | Validates externally hash-bound canonical H0/H1 in memory. Performs no filesystem or native calls. |
+| `_inspect` | Re-reads exact H0/H1, marker, runtime and preserved history against supplied hashes and identities. Creates nothing. |
+
+H0 and H1 live under `/var/lib/cmdmesh/owner-profile-handoff-v1`. Each document
+and each old file is limited to 4 MiB. The incremental old-file budget is 16 MiB,
+including the shared runtime, and is checked before reading the next file.
+The marker is limited to 16 KiB. Membership walks across all old and new controls
+precede the final fast file-metadata checks; overlapping seals must agree.
+Expected marker/profile bytes are fixed before their
+publication, so a changed write request cannot redefine a successful result.
+
+Marker publication uses exclusive creation with file and directory fsync. An
+interrupted write can leave a partial marker; that still blocks the old reader
+but cannot qualify H1. Partial H0/H1, fsync uncertainty and late control changes
+refuse ordinary retry. Keep those bytes for explicit diagnosis and a separately
+qualified metadata recovery procedure. There is no automatic overwrite, cleanup,
+rollback, nonce reset or discovery-based adoption of a candidate.
+
+The caller must hold the real pair exclusive lease, application exclusive lease
+and guest configuration shared leases, and must qualify genuine fresh worker
+and current-state evidence. The stored `caller_evidence` and
+`caller_closing_evidence` contain opaque references; their hashes alone prove
+neither current health nor worker absence. H1 always distinguishes metadata
+resolution from native success: `original_native_operation_qualified` and
+`native_action_dispatched` are false. A target H1 file is not external authority.
+
+No managed CLI, MCP or Ansible entry point admits this utility yet. Native fence
+qualification, full caller context-exit handling, partial-publication recovery,
+fresh-owner bootstrap and the corrected lifecycle SDK remain separate work.
+Run its local tests with
+`python -m unittest discover -s tests -p test_persistence_owner_retirement.py -v`.
+
+#### Existing schema-3 lifecycle SDK
+
+These functions belong to `persistence_owner_transition` and retain their
+schema-3 behavior, including the known early-clock limitation. They refuse a
+retired lineage. The corrected request profile is not integrated here yet.
+
 | SDK function | Contract |
 | --- | --- |
 | `genesis_sha256(checkpoint)` | Computes the proposed initial head without filesystem or network access. |
