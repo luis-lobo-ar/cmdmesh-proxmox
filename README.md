@@ -268,6 +268,12 @@ It rejects partial/foreign state and keeps all authority flags false. This is a
 planning component; execution and recovery across changed guest/manager states
 remain separate qualification work.
 
+The developing [shared-runtime bootstrap mutex](docs/owner-runtime-bootstrap.md)
+serializes cooperating initializers across owner pairs. It holds one fixed
+observed file descriptor and refuses contention immediately. The future executor
+must release it before SQL/current workers and still validate the runtime;
+holding this lock grants no operation or native authority.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
