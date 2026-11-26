@@ -300,6 +300,11 @@ SQL check. A separate fixed-directory witness supports an observed handoff to
 the file publisher. These remain executor components requiring real leases and
 managed filesystem qualification.
 
+The developing [native v4 integration](docs/owner-native-v4.md) keeps a retained
+completion tied to its original contract while validating the executing source
+separately. Its historical selector grants no native permission. The self-leased
+lifecycle executor and real restart/recovery qualification remain unfinished.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
