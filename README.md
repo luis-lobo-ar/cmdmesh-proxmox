@@ -250,6 +250,12 @@ start. It verifies actual kernel/guest readiness and keeps application/recovery
 claims false. Check and status never start or republish. Native qualification is
 pending; see [the blank OS boundary](docs/persistence-profile.md#one-blank-os-start-developing).
 
+The developing [owner-attempt inspector](docs/owner-attempt-inspection.md)
+captures an interrupted metadata handoff without retrying or changing it. It
+preserves partial and unknown records for explicit recovery decisions. This is
+an internal read-only component; it does not grant permission to continue a
+handoff or start a guest.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
