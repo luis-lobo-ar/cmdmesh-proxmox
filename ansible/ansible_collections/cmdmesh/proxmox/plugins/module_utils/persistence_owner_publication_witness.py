@@ -16,6 +16,7 @@ import struct
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_owner_atomic as atomic,
     persistence_owner_attempt as attempt,
+    persistence_owner_semantics as semantics,
 )
 
 r, profile = attempt.r, attempt.profile
@@ -82,14 +83,26 @@ def _signature(spec):
     )
 
 
-def _spec(owner, intent, intent_raw, intent_sha, action, complete_raw, complete_sha):
+def _spec(
+    owner,
+    intent,
+    intent_raw,
+    intent_sha,
+    action,
+    complete_raw,
+    complete_sha,
+    selection=None,
+):
     pair = profile.RUNTIME_ROOT / owner.pair_key
     shared = False
     dependencies = ()
     if action == "record-completion":
-        completion = r.validate_handoff(
-            owner, intent_raw, intent_sha, complete_raw, complete_sha
-        )
+        if selection is None:
+            completion = r.validate_handoff(
+                owner, intent_raw, intent_sha, complete_raw, complete_sha
+            )
+        else:
+            completion = selection.completion(complete_raw, complete_sha)
         path, raw, names = pair / "complete.json", complete_raw, ("intent.json",)
         dependencies = (
             _Dependency(
@@ -133,9 +146,13 @@ def _spec(owner, intent, intent_raw, intent_sha, action, complete_raw, complete_
 
 
 class _Publication:
-    def __init__(self, spec, binding, owner, binding_raw):
+    def __init__(self, spec, binding, owner, binding_raw, selection=None):
         self.spec, self._expected_spec = spec, _signature(spec)
         self._binding, self._owner, self._binding_raw = binding, owner, binding_raw
+        self._selection = self._expected_selection = selection
+        if selection is not None:
+            require(type(selection) is semantics.Selection, "selection")
+            selection.validate()
         self._attempted = False
         self._successful = False
         self._poisoned = False
@@ -220,6 +237,9 @@ class _Publication:
 
     def _memory(self):
         require(os.getpid() == self._process, "process-changed")
+        require(self._selection is self._expected_selection, "selection-changed")
+        if self._selection is not None:
+            self._selection.validate()
         r._close_binding(self._binding, self._owner, self._binding_raw)
         require(
             type(self.spec) is _Spec
@@ -233,6 +253,9 @@ class _Publication:
                 and r.state.canonical(r.asdict(self._receipt)) == self._receipt_raw,
                 "receipt-memory",
             )
+        if self._selection is not None:
+            self._selection._memory()
+        require(self._selection is self._expected_selection, "selection-changed")
 
     def _atomic_events(self, receipt):
         modified = linked = closed = False
@@ -415,7 +438,7 @@ class _Publication:
 
 
 @contextmanager
-def observe_control_publication(
+def _observe_control_publication(
     binding,
     intent_raw,
     intent_sha256,
@@ -423,7 +446,8 @@ def observe_control_publication(
     *,
     event_profile,
     complete_raw=None,
-    complete_sha256=None
+    complete_sha256=None,
+    _selection=None,
 ):
     """Watch one derived destination; caller owns immutable old/data/current proofs."""
     require(
@@ -436,12 +460,22 @@ def observe_control_publication(
         "action",
     )
     configuration = _configuration()
+    if _selection is not None:
+        require(type(_selection) is semantics.Selection, "selection")
+        _selection._match(binding, intent_raw, intent_sha256)
     owner, binding_raw = r._binding(binding)
     intent = r._intent(owner, intent_raw, intent_sha256)
     spec = _spec(
-        owner, intent, intent_raw, intent_sha256, action, complete_raw, complete_sha256
+        owner,
+        intent,
+        intent_raw,
+        intent_sha256,
+        action,
+        complete_raw,
+        complete_sha256,
+        _selection,
     )
-    publication = _Publication(spec, binding, owner, binding_raw)
+    publication = _Publication(spec, binding, owner, binding_raw, _selection)
     primary = None
     try:
         yield publication
@@ -474,4 +508,66 @@ def observe_control_publication(
     require(
         r.state.canonical(intent) == intent_raw and _configuration() == configuration,
         "input-memory",
+    )
+
+
+def observe_control_publication(
+    binding,
+    intent_raw,
+    intent_sha256,
+    action,
+    *,
+    event_profile,
+    complete_raw=None,
+    complete_sha256=None,
+):
+    """Legacy semantic1 leaf; no checkpoint or fresh-current qualification."""
+    return _observe_control_publication(
+        binding,
+        intent_raw,
+        intent_sha256,
+        action,
+        event_profile=event_profile,
+        complete_raw=complete_raw,
+        complete_sha256=complete_sha256,
+    )
+
+
+def observe_control_publication_v2(
+    *,
+    binding,
+    checkpoint,
+    checkpoint_sha256,
+    intent_raw,
+    intent_sha256,
+    contract_raw,
+    contract_sha256,
+    action,
+    event_profile,
+    complete_raw=None,
+    complete_sha256=None,
+):
+    """Require selected semantic2 inputs before all four finite publications.
+
+    The caller still supplies real leases, current/source/actor qualification,
+    immutable-old/reference/database witnesses and successful outer closure.
+    """
+    selection = semantics.select(
+        binding=binding,
+        checkpoint=checkpoint,
+        checkpoint_sha256=checkpoint_sha256,
+        intent_raw=intent_raw,
+        intent_sha256=intent_sha256,
+        contract_raw=contract_raw,
+        contract_sha256=contract_sha256,
+    )
+    return _observe_control_publication(
+        binding,
+        intent_raw,
+        intent_sha256,
+        action,
+        event_profile=event_profile,
+        complete_raw=complete_raw,
+        complete_sha256=complete_sha256,
+        _selection=selection,
     )

@@ -284,6 +284,11 @@ keeps historical handoff evidence separate from fresh stopped-guest or new-boot
 admission. Its version-2 contract and completion are metadata components;
 the executor and lost-callback recovery still require qualification.
 
+Explicit [version-2 inspection and publication APIs](docs/owner-semantic2-integration.md)
+carry that selected contract through capture replay, missing-record planning and
+the fixed publication witness. Older completions remain historical candidates;
+partial records stay blocked. The managed executor is still developing.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example

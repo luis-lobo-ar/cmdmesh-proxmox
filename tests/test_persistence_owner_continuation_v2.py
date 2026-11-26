@@ -32,6 +32,10 @@ class ContinuationV2Tests(unittest.TestCase):
         )
 
     def capture(self):
+        with attempt.inspect_attempt_v2(**self.case.arguments()) as view:
+            return view.raw
+
+    def legacy_capture(self):
         with attempt.inspect_attempt(
             self.case.owner, self.case.h0, self.case.h0sha
         ) as view:
@@ -99,17 +103,26 @@ class ContinuationV2Tests(unittest.TestCase):
     def test_old_plan_one_cannot_pass_new_loader(self):
         self.r.RUNTIME_ROOT.mkdir(mode=0o700)
         args = self.options("finish-runtime")
+        legacy_capture = self.legacy_capture()
         old = previous.prepare_continuation(
             self.case.owner,
             self.case.h0,
             self.case.h0sha,
-            args["capture_raw"],
-            args["capture_sha256"],
+            legacy_capture,
+            self.r.state.sha256(legacy_capture),
             args["action"],
         )
         with self.assertRaises(ValueError):
             self.codec.load_continuation(
                 **args, plan_raw=old.raw, plan_sha256=old.sha256
+            )
+
+    def test_legacy_capture_cannot_enter_contract2_plan(self):
+        self.r.RUNTIME_ROOT.mkdir(mode=0o700)
+        raw = self.legacy_capture()
+        with self.assertRaises(ValueError):
+            self.codec.prepare_continuation(
+                **self.options("finish-runtime", capture=raw)
             )
 
     def test_contract_capture_action_and_fresh_policy_changes_refuse(self):
@@ -195,3 +208,29 @@ class ContinuationV2Tests(unittest.TestCase):
             self.codec.load_continuation(
                 **args, plan_raw=plan.raw, plan_sha256=plan.sha256
             )
+
+    def test_planner_recloses_storage_profile_after_final_encoding(self):
+        self.r.RUNTIME_ROOT.mkdir(mode=0o700)
+        args = self.options("finish-runtime")
+        canonical = self.r.state.canonical
+        original_root = storage.RUNTIME_ROOT
+
+        def changed(value):
+            raw = canonical(value)
+            if (
+                type(value) is dict
+                and value.get("schema_version") == 2
+                and value.get("document_type", "").endswith(".continuation-plan")
+            ):
+                storage.RUNTIME_ROOT = original_root.with_name(
+                    original_root.name + "-changed"
+                )
+            return raw
+
+        try:
+            with mock.patch.object(
+                self.r.state, "canonical", side_effect=changed
+            ), self.assertRaises(ValueError):
+                self.codec.prepare_continuation(**args)
+        finally:
+            storage.RUNTIME_ROOT = original_root
