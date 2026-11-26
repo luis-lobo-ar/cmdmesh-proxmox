@@ -1672,6 +1672,55 @@ integrated into a new ordered SDK/profile. SDK integration and explicit legacy
 authority handoff remain unqualified. Do not call the leaf to bypass a pending
 lifecycle operation.
 
+#### Request-observation journal (internal, not managed admission)
+
+`persistence_owner_request_journal` is a separate schema-4 metadata component.
+It pins `owner-os-action-v3` and stores its files under
+`/var/lib/cmdmesh/owner-lifecycle-v4`. The schema-3 reader, namespace and native
+entry points keep their existing semantics. A new directory or a candidate
+genesis does not authorize a native action or bypass an old pending operation.
+There is no automatic migration between versions.
+
+The phase order is fixed:
+
+| Phase | Meaning |
+| --- | --- |
+| `dispatch.json` | Durable action, target, preparation and manager-epoch binding before the final closing worker. Its early clock is forensic context, not the ACK acceptance interval. |
+| `ack-observed.json` | Privacy-safe response from that exact dispatch. Clock discontinuities, bad TLS proof, missing receive clocks and rejected response semantics can remain unqualified evidence. |
+| `ack.json` | The exact result of validating the retained observation with the recorded request interval. Includes the observation payload hash; the phase envelope separately links its predecessor file. |
+| `terminal.json` | Stopped task status and complete bounded log for the qualified ACK, with its native outcome recomputed. |
+
+An observed response cannot skip ACK qualification, finish an operation, or grant
+retry permission. Historical readers repeat qualification from the recorded
+samples, without consulting the present time. Every file and phase remains in
+the sealed operation chain. Partial observation files can be captured as raw
+forensic material for separately qualified metadata-only resolution; resolution
+does not repair them, invent an ACK or assert that the original action succeeded.
+
+This component performs metadata work only. Its caller must hold the real pair
+exclusive lease and supply accepted authority. Managed SDK/Ansible integration,
+legacy retirement and explicit authority handoff are not yet implemented for
+this profile. Do not use it to continue or replay a pending schema-3 action.
+Tests model current/fence proof hashes; they do not qualify an actual worker
+fence or a real recovery operation.
+
+The versioned journal intentionally retains the schema-3 filesystem and history
+algorithms as an isolated implementation. Compatibility tests compare their
+function/class structure, except for the new phase payload validation and capture
+wrapper. The wrapper validates a bounded private typed snapshot and refuses
+late changes to the original binding, intent, raw records or file descriptors.
+Its closing view preserves exact types as well as values: a late list-to-tuple
+or bytes-to-bytearray replacement refuses even when ordinary JSON or equality
+would conceal the change.
+Callers supply bounded decoded canonical input; this internal API is not a
+streaming parser or an allocation limit for arbitrary Python object graphs.
+The inner validator remains structurally identical to schema 3. These explicit
+differences avoid changing the old reader or selecting namespace/schema
+combinations at runtime during the correction.
+
+Run the focused tests with
+`python -m unittest discover -s tests -p test_persistence_owner_request_journal.py -v`.
+
 | SDK function | Contract |
 | --- | --- |
 | `genesis_sha256(checkpoint)` | Computes the proposed initial head without filesystem or network access. |
