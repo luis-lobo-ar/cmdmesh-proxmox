@@ -1842,6 +1842,56 @@ A found target HEAD is not external acceptance. Metadata-only resolution,
 including worker fencing for unknown acknowledgements, remains a separate
 developing operation. This SDK does not qualify manager reboot or recovery.
 
+### Semantic owner causal capture (developing)
+
+`persistence_owner_fence.validate_causal_capture` joins captured evidence without
+reading files, processes, native services, the network or a clock. Pass canonical
+authority bytes and their externally selected SHA256, then canonical capture
+bytes and their SHA256. Select the authority before collecting node evidence.
+A node-discovered hash or a failed target's candidate is not accepted authority.
+
+The authority selects successful writer and shutdown hashes, the failed resume,
+its externally authenticated post-return failure provenance, the exact blocked
+basis and one reviewed source/scope profile. Source references must cover the
+fixed owner-qualified route inventory and vendor branch. Their authenticity and
+review happen outside this pure validator; hashing arbitrary code does not
+establish its behavior.
+
+| Capture group | Semantic validation |
+| --- | --- |
+| `checkpoint` | Reconstruct the accepted writer checkpoint with preparation, completion and all thirteen raw records. |
+| `shutdown` | Validate the accepted preparation, full SDK return, six raw phase records, stopped result and predecessor head. |
+| `failed_resume` | Bind its preparation and authenticated ACK-clock failure to the accepted predecessor, source profile and dispatch. |
+| `legacy` | Preserve the exact pending prefix and raw records; join dispatch entry and manager boot/mount epoch to the accepted shutdown. |
+| `actors` | Derive fixed manager paths, compare complete expected memberships/raw bytes/private metadata and available directory baselines, verify older POST progress and stopped-only create parameters. |
+| `normal_return` | Verify the selected task/log and independent normal-return events, using the accepted same-boot birth floor and derived exact prior-start exclusions. |
+| `before`, `closing` | Validate unchanged application/owner/current state, new init identity, host PID namespace, unit Job state and relevant process roles. Allow unrelated process churn. |
+
+The wire limits are 4MiB for authority, 32MiB for the complete capture, 4MiB for
+ordinary raw files and 8MiB for original preparation documents. Existing writer
+and legacy aggregate budgets also apply. Unknown fields, duplicate JSON keys,
+noncanonical bytes, contradictory selectors/epochs, changed controls, live
+target helpers, queued unit jobs or late input-memory changes refuse.
+
+This profile covers cooperating owner-qualified actors throughout the interval.
+Arbitrary root/CLI actions, a compromised provider and guest-triggered lifecycle
+changes are outside that scope. The producer must establish the accepted scope,
+authenticate native exports, enumerate/classify actual processes, and hold real
+pair/application/native leases. A supplied list or `complete` flag cannot prove
+process completeness. The current conservative init/monitor command tuples are
+modeled profile assumptions: actual LXC monitor titles can differ from launch
+argv and still need target-bound measurement/source qualification. There is no
+wildcard role exemption or qualified live collector in this component.
+
+Success returns only `semantic_certificate_verified: true`, matched hashes and
+identities. Request-fenced, original-operation-qualified, ACK-recovered,
+native-dispatched, metadata-resolution, mutation and application-write flags stay
+false. The function neither authenticates its own authority nor permits a
+handoff. A future fresh collector must finish all lease/control closures before
+it may qualify a scoped request fence. Neither layer reconstructs an old ACK or
+publishes a ready legacy head. H0/H1/marker inputs are excluded to avoid a hash
+cycle; later metadata intent can reference an independently accepted certificate.
+
 ### Borrowed current frame capture (developing)
 
 The internal current-state worker also has a borrowed-lease capture helper,
