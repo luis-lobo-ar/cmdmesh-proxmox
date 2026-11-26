@@ -1721,6 +1721,18 @@ combinations at runtime during the correction.
 Run the focused tests with
 `python -m unittest discover -s tests -p test_persistence_owner_request_journal.py -v`.
 
+The developing retirement path preserves the old pending HEAD and native/failure
+records. It will need a fixed per-pair barrier, a genuine fresh worker/current
+fence, and a separately accepted handoff before new-profile authority. It must
+not make an old lineage temporarily ready before retiring it.
+
+`test_persistence_owner_retirement_compatibility.py` probes the frozen old reader
+with injected fixture markers. It checks refusal for ready/pending/completed and
+resolution-aware histories, stale SDK preparations and status, partial markers,
+fresh-owner tombstones, unrelated-pair isolation and real child-process pair
+lock exclusion. These tests do not implement a durable publisher, qualify a
+native worker fence or authorize a migration.
+
 | SDK function | Contract |
 | --- | --- |
 | `genesis_sha256(checkpoint)` | Computes the proposed initial head without filesystem or network access. |
