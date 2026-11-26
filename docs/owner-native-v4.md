@@ -31,8 +31,22 @@ native authorization, dispatch and acknowledgment recovery have not occurred.
 
 ## Remaining executor requirements
 
-The v4 executor must acquire its own pair/configuration/application locks and
-validate fresh running or stopped observations. Immutable historical observers
+The private v4 coordinator now has its own pair/configuration/application lock
+scope and separately closed running/stopped current contexts. Its single-use
+worker window releases only the target configuration lock and reacquires it on
+exit. The original entry remains unchanged; the final phase has a separate entry.
+Failed current checks poison the scope. Failure reporting uses only the v4 journal
+and retains the pair lock until the failure-record attempt finishes.
+An operation error remains the primary error even when a subsequent lock-close
+fails; cleanup still attempts every owned lease exit.
+
+These are private lease helpers, not an admitted operation API. Their local tests
+exercise real flocks with explicitly modeled current/native providers. The
+admitted initializer, preparation, request dispatch, task polling and status API
+are still unfinished.
+
+The complete executor must also authenticate its executing source and qualified
+storage before native work. Immutable historical observers
 must remain held across separately closed before/after phase observations.
 It must qualify journal storage, serialize namespace bootstrap and refuse
 partial or foreign state.
