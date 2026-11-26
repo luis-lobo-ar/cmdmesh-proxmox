@@ -1842,6 +1842,25 @@ A found target HEAD is not external acceptance. Metadata-only resolution,
 including worker fencing for unknown acknowledgements, remains a separate
 developing operation. This SDK does not qualify manager reboot or recovery.
 
+### Borrowed current frame capture (developing)
+
+The internal current-state worker also has a borrowed-lease capture helper,
+`persistence_owner_current._current_frames_leased`. It yields a frozen holder
+with canonical `initial_raw` bytes. `closing_raw` remains absent and `completed`
+false until the final worker passes validation, stable-state comparison and fast
+control closure. Successful context exit provides the actual final frame,
+including its later uptime. Caller, final worker, entry or closure failure does
+not publish that final frame. Changed capture slots or either frame's memory
+refuse.
+
+The existing `_current_leased` interface still yields its independent initial
+dictionary. Both paths share the same worker and validation sequence. Neither
+helper acquires the caller's outer leases or confers a native/recovery capability.
+`completed` describes this worker context only; a controller must also finish
+every enclosing pair, application and native lease context before returning a
+certificate. Local tests use real disposable pair/config/native flocks with
+modeled current/native observations; they are not infrastructure qualification.
+
 ### Selected-worker normal-return observation (developing)
 
 The internal `persistence_owner_reaper.validate_normal_return` checks captured

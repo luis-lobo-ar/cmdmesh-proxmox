@@ -7,6 +7,7 @@ Private workers borrow real caller-held leases; no native lifecycle is exposed.
 
 from contextlib import contextmanager, ExitStack
 import copy
+from dataclasses import dataclass
 import errno
 import os
 from pathlib import Path
@@ -424,6 +425,53 @@ def _fast_close(request, profile, entry, observed, guard):
 @contextmanager
 def _current_leased(checkpoint, entry, raw, prior_runtime=None):
     """Borrow pair/native/application leases and close fresh evidence after yield."""
+    with _current_worker_leased(checkpoint, entry, raw, prior_runtime) as first:
+        yield first
+
+
+@dataclass(frozen=True, slots=True)
+class _CurrentFrames:
+    initial_raw: bytes | None = None
+    closing_raw: bytes | None = None
+
+    @property
+    def completed(self):
+        return self.closing_raw is not None
+
+
+@contextmanager
+def _current_frames_leased(checkpoint, entry, raw, prior_runtime=None):
+    """Retain canonical first/final frames; callers still own every outer lease.
+
+    Completion here describes this worker context only. A controller must not
+    publish a certificate until all its enclosing lease contexts also succeed.
+    """
+    frames = _CurrentFrames()
+    with _current_worker_leased(checkpoint, entry, raw, prior_runtime, frames):
+        yield frames
+
+
+def _close_frames(frames, initial_raw):
+    require(
+        type(frames) is _CurrentFrames
+        and type(frames.initial_raw) is bytes
+        and frames.initial_raw == initial_raw
+        and frames.closing_raw is None,
+        "frame-capture-changed",
+    )
+
+
+@contextmanager
+def _current_worker_leased(checkpoint, entry, raw, prior_runtime=None, frames=None):
+    require(
+        frames is None
+        or (
+            type(frames) is _CurrentFrames
+            and frames.initial_raw is None
+            and frames.closing_raw is None
+        ),
+        "frame-capture",
+    )
     checkpoint, entry = copy.deepcopy(checkpoint), copy.deepcopy(entry)
     prior_runtime = copy.deepcopy(prior_runtime)
     request, profile, _ = _authority(checkpoint)
@@ -454,7 +502,12 @@ def _current_leased(checkpoint, entry, raw, prior_runtime=None):
         "guest_image_verified": phase == "os_quiesced",
     }
     validate_current(checkpoint, phase, first)
+    initial_raw = state.canonical(first) if frames is not None else None
+    if frames is not None:
+        object.__setattr__(frames, "initial_raw", initial_raw)
     yield copy.deepcopy(first)
+    if frames is not None:
+        _close_frames(frames, initial_raw)
     # All slow caller work and entry/control probes precede the closing worker.
     _same_entry(entry, _entry_leased(checkpoint, phase, prior_runtime))
     closing = {
@@ -463,6 +516,8 @@ def _current_leased(checkpoint, entry, raw, prior_runtime=None):
         "guest_image_verified": phase == "os_quiesced",
     }
     validate_current(checkpoint, phase, closing)
+    if frames is not None:
+        require(state.canonical(first) == initial_raw, "initial-frame-changed")
     if phase == "os_quiesced":
         left, right = copy.deepcopy(first), copy.deepcopy(closing)
         left["observation"]["guest"] = runtime.stable_guest(
@@ -479,7 +534,13 @@ def _current_leased(checkpoint, entry, raw, prior_runtime=None):
         )
     else:
         same(first, closing, "current-changed")
+    closing_raw = state.canonical(closing) if frames is not None else None
     _fast_close(request, profile, entry, closing, guard)
+    if frames is not None:
+        _close_frames(frames, initial_raw)
+        require(state.canonical(first) == initial_raw, "initial-frame-changed")
+        require(state.canonical(closing) == closing_raw, "closing-frame-changed")
+        object.__setattr__(frames, "closing_raw", closing_raw)
 
 
 def collect(checkpoint, *, phase, prior_runtime=None):
