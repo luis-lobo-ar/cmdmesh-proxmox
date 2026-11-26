@@ -262,6 +262,12 @@ and fsynced. It refuses existing names and unsupported capabilities. The
 retirement workflow does not use this primitive yet; managed filesystem support
 and interrupted-operation continuation still require qualification.
 
+The [continuation planning API](docs/owner-continuation-plans.md) revalidates an
+externally selected capture in memory and describes one missing fixed record.
+It rejects partial/foreign state and keeps all authority flags false. This is a
+planning component; execution and recovery across changed guest/manager states
+remain separate qualification work.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example

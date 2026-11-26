@@ -82,3 +82,20 @@ obligations, not proved by this leaf. The complete fixture is created using the
 older direct writer and has its profile changed **during test setup only**;
 this deliberately does not qualify the prospective atomic writer. Tests that
 isolate actual mutation events model an equal-metadata closer explicitly.
+
+## Pure validation of selected captures
+
+The developing `persistence_owner_attempt_codec.validate_capture` accepts the
+same binding and selected H0 plus externally selected capture bytes and digest.
+It validates bounded file bytes, integer identities, paths and tables, then
+replays this inspector's layout classifier through an in-memory reader. The
+entire canonical reconstruction must match. Present child facts and directory
+membership must agree in both directions; omitted facts do not imply absence.
+
+The codec performs no observation or write. It checks internal consistency,
+including valid complete candidates, while refusing blocked/partial/legacy
+states for continuation planning. It cannot authenticate the producer, actual
+ENOENT, held descriptors, observer closure, current state or publication
+durability. Those remain caller gates. The live reader's directory observation
+is separated from the classifier so accidental filesystem access in pure replay
+fails the IO-denial tests.

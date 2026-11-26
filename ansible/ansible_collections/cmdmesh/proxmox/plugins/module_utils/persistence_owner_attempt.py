@@ -137,6 +137,10 @@ class _Reader:
         self.observed[key] = first
         return first
 
+    def directory_identity(self, path, *, private=False):
+        """Return the actual held-directory observation for the layout collector."""
+        return _identity(os.fstat(self._directory(path, private=private)))
+
     def directory(self, path, *, shared=False):
         first = self.entry(path)
         if first is None:
@@ -352,9 +356,9 @@ def _collect(reader, owner, intent, intent_raw, intent_sha):
 
     legacy = r.legacy.RUNTIME_ROOT / owner.pair_key
     for path, expected in intent["shared_directories"].items():
-        fd = reader._directory(Path(path), private=True)
-        require(_identity(os.fstat(fd))[:5] == expected, "legacy-parent-changed")
-        directories[path] = _identity(os.fstat(fd))
+        identity = reader.directory_identity(Path(path), private=True)
+        require(identity[:5] == expected, "legacy-parent-changed")
+        directories[path] = identity
     shared = file(r.legacy.RUNTIME_ROOT / "runtime.json")
     require(
         type(shared) is dict
