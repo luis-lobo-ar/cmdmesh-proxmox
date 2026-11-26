@@ -289,6 +289,11 @@ carry that selected contract through capture replay, missing-record planning and
 the fixed publication witness. Older completions remain historical candidates;
 partial records stay blocked. The managed executor is still developing.
 
+The developing [self-leased metadata executor](docs/owner-metadata-executor.md)
+applies one selected step and provides a separate read-only requalification
+path. It retains observations through the final database check and all lease
+exits. Installed-producer and managed-filesystem qualification remain pending.
+
 Its developing [resource observers](docs/owner-executor-resources.md) keep the
 original records, application references and database watched before the first
 SQL check. A separate fixed-directory witness supports an observed handoff to
