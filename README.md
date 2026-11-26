@@ -256,6 +256,12 @@ preserves partial and unknown records for explicit recovery decisions. This is
 an internal read-only component; it does not grant permission to continue a
 handoff or start a guest.
 
+Its prospective [atomic byte publisher](docs/owner-atomic-publication.md) makes
+new final records visible only after their complete contents have been written
+and fsynced. It refuses existing names and unsupported capabilities. The
+retirement workflow does not use this primitive yet; managed filesystem support
+and interrupted-operation continuation still require qualification.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
