@@ -10,6 +10,41 @@ one bounded immutable byte string at a private final filename. It returns its
 SHA-256 only after publication and descriptor closure succeed. An existing
 destination always refuses, including one with identical contents.
 
+`publish_observed(path, raw, protocol=PROTOCOL)` uses the same implementation
+and returns a frozen, slotted `PublicationReceipt`. `publish_private` returns
+that receipt's `payload_sha256`, preserving its string API. No callback or
+descriptor is exposed. The receipt has these fields:
+
+| Field | Meaning |
+| --- | --- |
+| `path` | Exact final absolute path. |
+| `parent_identity` | Held and named parent stable-five identity. |
+| `anonymous_name` | Actual anonymous dentry name read through the held procfd. |
+| `before_identity` | Full-nine private-file identity before linking, with zero links. |
+| `final_identity` | Full-nine final identity, same device/inode and one link. |
+| `payload_sha256`, `payload_bytes` | Exact payload hash and byte count. |
+| `protocol` | Explicit selected publication protocol. |
+
+Identity tuples use the existing persistence observation format. The anonymous
+name is obtained before linking from the held procfs directory's descriptor
+symlink, with exact parent, one immediate name and ` (deleted)` suffix. It is
+not guessed from an inode or accepted from an event stream. A named child with
+that spelling must be absent, with only `ENOENT` accepted as absence. The name
+is rechecked after linking, before the final parent and content proofs. The
+procfd's observed file identity must match the held anonymous FD. Malformed
+names, changed names or observation errors refuse without a successful receipt.
+The captured before/final identities themselves must satisfy the complete
+private-file policy, including mode, owner, group, link count and size. An
+earlier policy probe cannot qualify a later captured identity after a race.
+
+The receipt is a source-defined syscall observation, not an independently
+authenticated capability. A planned-publication witness must invoke the
+publisher itself, bind the fixed expected path and payload, and maintain its
+own event/metadata observations. Constructing a receipt object does not grant
+permission or prove that any syscall occurred. The anonymous-name event format
+and publication primitives still need qualification on the selected managed
+kernel/filesystem. No anonymous-name wildcard or event-queue reset is implied.
+
 The sole protocol is `linux-otmpfile-procfd-exclusive-link-v1`:
 
 1. Hold and validate the private destination-directory descriptor.
@@ -55,5 +90,9 @@ replacement for that complete operation proof.
 The disposable local tests exercise actual process death before and after the
 link, short and failed writes, fsync/close failures, exclusive-name refusal,
 wrong procfs/descriptor binding, private metadata and unexpected extra links.
+Receipt tests also exercise actual procfd spelling, named-child collisions,
+malformed/changed names, immutable field shape, error propagation and cleanup
+that suppresses a return. A failure after linking may retain full bytes even
+when no receipt is returned; no caller should infer success from those bytes.
 They use synthetic bytes and no managed host. Run them with the repository's
 normal test environment and `test_persistence_owner_atomic.py`.

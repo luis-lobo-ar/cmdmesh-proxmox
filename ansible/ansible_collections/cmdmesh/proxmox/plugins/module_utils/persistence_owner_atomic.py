@@ -6,6 +6,7 @@ unaccepted candidate; this helper never overwrites or removes that final name.
 """
 
 import ctypes
+from dataclasses import dataclass
 import errno
 import hashlib
 import os
@@ -25,17 +26,35 @@ PROC_SUPER_MAGIC = 0x9FA0
 AT_SYMLINK_FOLLOW = 0x400
 
 
+@dataclass(frozen=True, slots=True)
+class PublicationReceipt:
+    """Closed syscall observation; not a lease, witness or publication permission."""
+
+    path: str
+    parent_identity: tuple[int, ...]
+    anonymous_name: str
+    before_identity: tuple[int, ...]
+    final_identity: tuple[int, ...]
+    payload_sha256: str
+    payload_bytes: int
+    protocol: str
+
+
 def require(value, code):
     state.require(value, "persistence-owner-atomic-" + code)
 
 
 def _private(info, links, size):
+    _private_identity(observe.stable(info), links, size)
+
+
+def _private_identity(identity, links, size):
     require(
-        stat.S_ISREG(info.st_mode)
-        and stat.S_IMODE(info.st_mode) == 0o600
-        and (info.st_uid, info.st_gid) == (os.geteuid(), os.getegid())
-        and info.st_nlink == links
-        and info.st_size == size,
+        stat.S_ISREG(identity[2])
+        and stat.S_IMODE(identity[2]) == 0o600
+        and (identity[3], identity[4]) == (os.geteuid(), os.getegid())
+        and identity[5] == links
+        and identity[6] == size,
         "file-policy",
     )
 
@@ -53,8 +72,37 @@ def _content(fd, raw):
     return before
 
 
+def _anonymous_name(proc, source, parent, directory):
+    """Read the held procfd's actual dentry spelling, never infer it from an inode."""
+    link = os.readlink(source, dir_fd=proc)
+    prefix, suffix = os.fsencode(parent) + b"/", b" (deleted)"
+    require(
+        type(link) is bytes and link.startswith(prefix) and link.endswith(suffix),
+        "anonymous-name",
+    )
+    name = link[len(prefix) : -len(suffix)]
+    require(
+        0 < len(name) <= 255
+        and name not in (b".", b"..")
+        and not any(character in name for character in (b"/", b"\0", b"\r", b"\n")),
+        "anonymous-name",
+    )
+    try:
+        os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except FileNotFoundError as error:
+        require(error.errno == errno.ENOENT, "anonymous-name-absence")
+    else:
+        require(False, "anonymous-name-present")
+    return os.fsdecode(name)
+
+
 def publish_private(path, raw, *, protocol):
-    """Publish one immutable byte string; ordinary replay always refuses."""
+    """Preserve the string-returning API using the sole observed syscall path."""
+    return publish_observed(path, raw, protocol=protocol).payload_sha256
+
+
+def publish_observed(path, raw, *, protocol):
+    """Publish once and return an immutable receipt only after descriptor closure."""
     require(type(protocol) is str and protocol == PROTOCOL, "storage-profile")
     require(
         sys.platform == "linux"
@@ -132,7 +180,9 @@ def publish_private(path, raw, *, protocol):
         os.fsync(temporary)
         _private(os.fstat(temporary), 0, len(raw))
         before_link = _content(temporary, raw)
+        _private_identity(before_link, 0, len(raw))
         source = str(temporary).encode("ascii")
+        anonymous = _anonymous_name(proc, source, parent, directory)
         require(
             observe.stable(os.stat(source, dir_fd=proc, follow_symlinks=True))
             == before_link,
@@ -149,6 +199,10 @@ def publish_private(path, raw, *, protocol):
             )
         os.fsync(directory)
         require(
+            _anonymous_name(proc, source, parent, directory) == anonymous,
+            "anonymous-name-changed",
+        )
+        require(
             parent.resolve(strict=True) == parent
             and observe.stable(parent.lstat())[:5] == identity
             and observe.stable(os.fstat(directory))[:5] == identity,
@@ -156,12 +210,25 @@ def publish_private(path, raw, *, protocol):
         )
         _private(os.fstat(temporary), 1, len(raw))
         final = _content(temporary, raw)
+        _private_identity(final, 1, len(raw))
         require(
-            observe.stable(os.stat(path.name, dir_fd=directory, follow_symlinks=False))
+            final[:2] == before_link[:2]
+            and observe.stable(
+                os.stat(path.name, dir_fd=directory, follow_symlinks=False)
+            )
             == final,
             "final-name-changed",
         )
-        return hashlib.sha256(raw).hexdigest()
+        return PublicationReceipt(
+            path=str(path),
+            parent_identity=tuple(identity),
+            anonymous_name=anonymous,
+            before_identity=tuple(before_link),
+            final_identity=tuple(final),
+            payload_sha256=hashlib.sha256(raw).hexdigest(),
+            payload_bytes=len(raw),
+            protocol=protocol,
+        )
     except BaseException as error:
         primary = error
         raise
