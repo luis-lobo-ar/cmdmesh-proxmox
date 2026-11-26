@@ -289,6 +289,12 @@ carry that selected contract through capture replay, missing-record planning and
 the fixed publication witness. Older completions remain historical candidates;
 partial records stay blocked. The managed executor is still developing.
 
+Its developing [resource observers](docs/owner-executor-resources.md) keep the
+original records, application references and database watched before the first
+SQL check. A separate fixed-directory witness supports an observed handoff to
+the file publisher. These remain executor components requiring real leases and
+managed filesystem qualification.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
