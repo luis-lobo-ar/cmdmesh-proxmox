@@ -1842,6 +1842,37 @@ A found target HEAD is not external acceptance. Metadata-only resolution,
 including worker fencing for unknown acknowledgements, remains a separate
 developing operation. This SDK does not qualify manager reboot or recovery.
 
+### Selected-worker normal-return observation (developing)
+
+The internal `persistence_owner_reaper.validate_normal_return` checks captured
+evidence without reading the host, filesystem, network or clock. Supply an exact
+guest binding, accepted host boot ID, trusted source-manifest hash, canonical
+observation bytes/hash, an inclusive process-birth floor and any accepted prior
+start UPIDs to exclude. The source hash must describe the reviewed vendor and
+producer profile; a hash supplied by the observation is not an authority.
+
+The observation contains one stopped `vzstart` status, its complete known log
+and three selected journal records: parent start, child start and parent end.
+The validator joins their exact UPID, root UID/GID, Perl executable, pvedaemon
+unit/invocation, boot, parent/child PIDs, task titles, journal sequence and
+monotonic ordering. Reverse chronological exports work. This version accepts
+only a clean `TASK OK` or the exact supported systemd nesting warning. Unknown
+output, duplicate/missing events, another boot or an error-priority end refuses.
+
+The reviewed pvedaemon parent derives end-event priority from its worker's
+waitpid status. INFO therefore adds evidence independent of the task status and
+last log line, which both use the same log classifier. A forged warning marker
+followed by abnormal worker death cannot qualify through that classifier alone.
+The caller must authenticate the actual journal producer/export and source
+profile. Decoded JSON cannot establish their authenticity by itself.
+
+A successful return means `normal_return_observed: true` for that selected
+worker. `original_request_fenced`, `original_native_operation_qualified`,
+`ack_recovered` and `native_action_dispatched` remain false. This component does
+not associate a worker with a lost request, prove actor/claim closure, inspect
+current processes/jobs/application state, hold leases, retire metadata or
+recover an ACK. Those remain requirements of the complete recovery certificate.
+
 ### Ansible owner OS boundary (developing)
 
 `cmdmesh.proxmox.lxc_persistence_owner_os` reconstructs the accepted checkpoint
