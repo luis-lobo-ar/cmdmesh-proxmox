@@ -54,27 +54,15 @@ def _projection(body):
     }
 
 
-def prepare_continuation(
-    binding, intent_raw, intent_sha256, capture_raw, capture_sha256, action
-):
-    """Select one exact missing publication without authenticating its producer."""
-    expected_policy = r.state.canonical(COMPARISON_POLICY)
+def _storage_document(owner, intent_raw, intent_sha256, capture_sha256, body, action):
+    """Assemble only finite storage fields from an already validated capture.
+
+    Callers retain their explicit versioned capture validators and admission
+    semantics. This helper performs no decoding, IO or version conversion.
+    """
+    require(type(action) is str and action in {name for _, name in _EDGES}, "action")
+    require((body["status"], action) in _EDGES, "stage-action")
     expected_profile = r.state.canonical(profile.RUNTIME)
-    paths = (
-        profile.RUNTIME_ROOT,
-        profile.MARKER,
-        profile.PROTOCOL,
-        r.RUNTIME_ROOT,
-        r.legacy.RUNTIME_ROOT,
-    )
-    edges, limit = _EDGES, OUTPUT_LIMIT
-    require(type(action) is str and action in {name for _, name in edges}, "action")
-    owner, binding_raw = r._binding(binding)
-    intent = r._intent(owner, intent_raw, intent_sha256)
-    body = codec.validate_capture(
-        owner, intent_raw, intent_sha256, capture_raw, capture_sha256
-    )
-    require((body["status"], action) in edges, "stage-action")
     pair = profile.RUNTIME_ROOT / owner.pair_key
     if action == "finish-runtime":
         destination = profile.RUNTIME_ROOT / "runtime.json"
@@ -106,12 +94,8 @@ def prepare_continuation(
         payload_source=source,
         payload_sha256=None if payload is None else r.state.sha256(payload),
         payload_size=None if payload is None else len(payload),
-        comparison_policy_sha256=r.state.sha256(expected_policy),
+        comparison_policy_sha256=r.digest(COMPARISON_POLICY),
         expected_fresh_projection_sha256=r.digest(_projection(body)),
-        required_current_phase="os_quiesced",
-        required_host_epoch=intent["caller_evidence"]["host_epoch"],
-        required_worker_fence_sha256=intent["caller_evidence"]["worker_fence_sha256"],
-        unsupported_phase_or_epoch="phase-aware-reconciliation-required",
         required_fresh_gates=[
             "authenticated-source-and-closed-capture-provenance",
             "pair-exclusive-native-config-shared-application-exclusive-leases",
@@ -133,6 +117,38 @@ def prepare_continuation(
         native_action_dispatched=False,
         metadata_resolution_recorded=False,
         successor_native_admission_authorized=False,
+    )
+    return document
+
+
+def prepare_continuation(
+    binding, intent_raw, intent_sha256, capture_raw, capture_sha256, action
+):
+    """Select one exact missing publication without authenticating its producer."""
+    expected_policy = r.state.canonical(COMPARISON_POLICY)
+    expected_profile = r.state.canonical(profile.RUNTIME)
+    paths = (
+        profile.RUNTIME_ROOT,
+        profile.MARKER,
+        profile.PROTOCOL,
+        r.RUNTIME_ROOT,
+        r.legacy.RUNTIME_ROOT,
+    )
+    edges, limit = _EDGES, OUTPUT_LIMIT
+    require(type(action) is str and action in {name for _, name in edges}, "action")
+    owner, binding_raw = r._binding(binding)
+    intent = r._intent(owner, intent_raw, intent_sha256)
+    body = codec.validate_capture(
+        owner, intent_raw, intent_sha256, capture_raw, capture_sha256
+    )
+    document = _storage_document(
+        owner, intent_raw, intent_sha256, capture_sha256, body, action
+    )
+    document.update(
+        required_current_phase="os_quiesced",
+        required_host_epoch=intent["caller_evidence"]["host_epoch"],
+        required_worker_fence_sha256=intent["caller_evidence"]["worker_fence_sha256"],
+        unsupported_phase_or_epoch="phase-aware-reconciliation-required",
     )
     raw = r.state.canonical(document)
     require(0 < len(raw) <= limit, "output-limit")

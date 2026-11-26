@@ -64,6 +64,10 @@ the complete canonical plan; a version-1 plan cannot pass that loader.
 Unused namespaces and completed candidates use separate paths. A completion's
 future bytes are not guessed while planning.
 
+The [version-2 inspector/replay/witness interfaces](owner-semantic2-integration.md)
+now carry the selected contract through metadata observation and one fixed
+publication. The planner consumes their actual capture2 and refuses capture1.
+
 These codecs are components of recovery. The executor, source and actor
 qualification, post-publication database/reference closure and lost-callback
 reconciliation still need integration. No successful

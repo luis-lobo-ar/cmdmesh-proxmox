@@ -54,12 +54,13 @@ unaccepted file; the witness never reconstructs a receipt from that file.
 Repeated cleanup is idempotent and cannot close a reused descriptor belonging to
 an unrelated resource. Ambiguous failed descriptor closes are not retried.
 
-This witness's completion validation still uses the existing os-quiesced
-semantic format for local fixtures. The separate
-[phase-aware codecs](owner-phase-aware-completion.md) implement version-2
-contracts, completion and plans. Their integration with this witness, fresh
-current admission and reconciliation must pass qualification before managed
-handoff publication is accepted.
+The legacy entry point retains os-quiesced schema1 semantics for historical
+fixtures. The explicit
+[version-2 entry point](owner-semantic2-integration.md) requires the decoded
+checkpoint and selected contract before any observer opens or action writes;
+completion publication requires semantic2. The shared event/atomic mechanism is
+unchanged. Fresh managed current, the enclosing executor and reconciliation must
+pass qualification before managed handoff publication is accepted.
 
 Tests use disposable metadata and actual local inotify, procfd linking and file
 descriptors. They cover all four payloads, single-use/failure behavior, immutable
