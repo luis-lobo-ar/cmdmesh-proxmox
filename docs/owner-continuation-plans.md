@@ -57,6 +57,31 @@ follows separate read-only requalification. No action resets a claim, changes a
 nonce, overwrites a record, appends to partial H1, reconstructs a stale capability
 or retries the original native request.
 
+## Plan a clean begin
+
+`persistence_owner_begin.prepare_begin` takes the explicit checkpoint, binding,
+H0, publication contract and selected capture2 bytes with their hashes.
+`load_begin` reconstructs those same inputs and compares the exact plan bytes.
+Both functions perform no filesystem access.
+
+The capture must classify as `unused`. If the runtime root is absent, the plan
+declares its private creation, runtime2 publication, own-pair creation and exact
+H0 publication. It also declares initialization or reuse of the fixed bootstrap
+mutex, with release before another current-state worker. If the shared runtime2
+already exists and the own pair is absent, only pair creation and H0 publication
+are planned. The plan ends at `h0-only`. Marker and completion publication remain
+separate selected actions.
+
+An empty runtime root, existing own pair, partial record, runtime1 or full
+candidate is not a clean begin. The caller must inspect and select the appropriate
+continuation or explicit read-only requalification. A begin plan never invents a
+partially completed capture to enter an ordinary missing-record edge.
+
+The plan retains the fresh-state comparison policy and phase-aware contract.
+All authority flags remain false. Execution still requires the qualified
+self-leased executor and its selected source, filesystem and current-state
+admission. A plan is not permission to run the declared operations directly.
+
 The plan binds the selected H0 and whole capture hashes, storage protocol/runtime
 profile, stage, action, fixed destination, and known payload hash/size. Completion
 has no predicted payload hash or closing evidence. Its future H1 must be derived

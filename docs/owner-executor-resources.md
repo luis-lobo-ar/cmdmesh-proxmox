@@ -66,3 +66,7 @@ metadata and event checks, retain coverage through the final current worker,
 and await every resource and lease exit before returning an accepted result.
 These local components do not qualify the managed filesystem, authenticate a
 producer, resolve a lost callback, or grant native-operation authority.
+
+The developing [execution-admission and filesystem checks](owner-execution-admission.md)
+separate externally selected records from live destination-parent observations.
+Their initial ancestor facts do not replace the attempt and publication witnesses.
