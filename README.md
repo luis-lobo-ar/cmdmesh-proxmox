@@ -274,6 +274,11 @@ observed file descriptor and refuses contention immediately. The future executor
 must release it before SQL/current workers and still validate the runtime;
 holding this lock grants no operation or native authority.
 
+The developing [control-publication witness](docs/owner-publication-witness.md)
+binds one expected write to actual parent/file events and the atomic publisher's
+closed receipt. It rejects unexpected mutations and retained-file drift. This
+leaf still requires an executor with real leases and current-state admission.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
