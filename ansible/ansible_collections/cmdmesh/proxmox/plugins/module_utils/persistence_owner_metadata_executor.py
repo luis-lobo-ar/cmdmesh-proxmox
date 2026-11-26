@@ -228,11 +228,19 @@ def _hold_actor_controls(admission):
             )
             for name, item in group["files"].items():
                 _control_file(
-                    reader, Path(group["path"]) / name, item["sha256"], item["identity"]
+                    reader,
+                    Path(group["path"]) / name,
+                    r.state.sha256(item["raw"].encode("utf-8")),
+                    item["identity"],
                 )
         for group in (actors["history_files"], actors["runtime_files"]):
             for path, item in group.items():
-                _control_file(reader, path, item["sha256"], item["identity"])
+                _control_file(
+                    reader,
+                    path,
+                    r.state.sha256(item["raw"].encode("utf-8")),
+                    item["identity"],
+                )
         for role, path in VENDOR_PATHS.items():
             _control_file(reader, path, sources[role], vendor=True)
         reader.freeze_fds()

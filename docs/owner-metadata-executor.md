@@ -40,6 +40,12 @@ Original journal, reference, database, actor and vendor-source observations are
 armed before the first current-state SQL worker. Its closing frame is E1.
 Completion publication derives H1 from that actual frame.
 
+Selected actor records retain their existing raw-text and identity schema. The
+executor derives each expected SHA256 from the exact UTF-8 raw bytes, including
+empty text and trailing newlines, then compares the fresh held file's bytes and
+identity. It does not require an additional stored digest field. Vendor files
+retain their independently selected expected digests and fixed file policy.
+
 The second context supplies the post-publication closing frame E2. Pending
 resource events are checked after its initial worker and before the first write.
 Directory and publication witnesses overlap before the preceding observer
