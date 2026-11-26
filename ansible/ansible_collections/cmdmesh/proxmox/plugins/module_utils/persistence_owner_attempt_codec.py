@@ -36,6 +36,12 @@ _FIELDS = {
     "metadata_resolution_recorded",
     "successor_native_admission_authorized",
 }
+_FIELDS_V2 = _FIELDS | {
+    "checkpoint_sha256",
+    "publication_contract_sha256",
+    "completion_schema_version",
+    "completion_disposition",
+}
 
 
 def require(value, code):
@@ -289,8 +295,22 @@ class _MemoryReader:
         return found
 
 
-def validate_capture(binding, intent_raw, intent_sha256, capture_raw, capture_sha256):
+def _validate_capture(
+    binding,
+    intent_raw,
+    intent_sha256,
+    capture_raw,
+    capture_sha256,
+    optional_selection=None,
+):
     """Check selected JSON consistency; prove no exporter provenance or live truth."""
+    require(
+        optional_selection is None
+        or type(optional_selection) is attempt.semantics.Selection,
+        "semantic-selection",
+    )
+    if optional_selection is not None:
+        optional_selection._match(binding, intent_raw, intent_sha256)
     expected_profile = r.state.canonical(profile.RUNTIME)
     expected_paths = (
         profile.RUNTIME_ROOT,
@@ -307,7 +327,7 @@ def validate_capture(binding, intent_raw, intent_sha256, capture_raw, capture_sh
     owner, binding_raw = r._binding(binding)
     intent = r._intent(owner, intent_raw, intent_sha256)
     body = r._decode(capture_raw, capture_sha256, attempt.OUTPUT_LIMIT)
-    r.state.keys(body, _FIELDS)
+    r.state.keys(body, _FIELDS if optional_selection is None else _FIELDS_V2)
     require(
         body["blocked_reasons"] == []
         and body["unsafe_entries"] == {}
@@ -316,7 +336,13 @@ def validate_capture(binding, intent_raw, intent_sha256, capture_raw, capture_sh
         "blocked",
     )
     reader = _MemoryReader(body, owner, intent)
-    reconstructed = attempt._collect(reader, owner, intent, intent_raw, intent_sha256)
+    reconstructed = (
+        attempt._collect(reader, owner, intent, intent_raw, intent_sha256)
+        if optional_selection is None
+        else attempt._collect(
+            reader, owner, intent, intent_raw, intent_sha256, optional_selection
+        )
+    )
     require(r.state.canonical(reconstructed) == capture_raw, "reconstruction")
     r._close_binding(binding, owner, binding_raw)
     require(
@@ -342,4 +368,45 @@ def validate_capture(binding, intent_raw, intent_sha256, capture_raw, capture_sh
         and r.state.sha256(capture_raw) == capture_sha256,
         "input-changed",
     )
+    if optional_selection is not None:
+        optional_selection.validate()
+        require(
+            r.state.canonical(reconstructed) == capture_raw
+            and r.state.canonical(body) == capture_raw,
+            "semantic-memory-changed",
+        )
     return reconstructed
+
+
+def validate_capture(binding, intent_raw, intent_sha256, capture_raw, capture_sha256):
+    """Replay the unchanged schema1 forensic contract."""
+    return _validate_capture(
+        binding, intent_raw, intent_sha256, capture_raw, capture_sha256
+    )
+
+
+def validate_capture_v2(
+    *,
+    binding,
+    checkpoint,
+    checkpoint_sha256,
+    intent_raw,
+    intent_sha256,
+    contract_raw,
+    contract_sha256,
+    capture_raw,
+    capture_sha256,
+):
+    """Replay explicit semantic2 selection; never authenticate exporter or leases."""
+    selected = attempt.semantics.select(
+        binding=binding,
+        checkpoint=checkpoint,
+        checkpoint_sha256=checkpoint_sha256,
+        intent_raw=intent_raw,
+        intent_sha256=intent_sha256,
+        contract_raw=contract_raw,
+        contract_sha256=contract_sha256,
+    )
+    return _validate_capture(
+        binding, intent_raw, intent_sha256, capture_raw, capture_sha256, selected
+    )

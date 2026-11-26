@@ -19,6 +19,7 @@ import struct
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_owner_retirement as r,
     persistence_owner_storage_profile as profile,
+    persistence_owner_semantics as semantics,
 )
 
 _WALK_ROOT = Path("/")
@@ -323,7 +324,13 @@ class Observation:
     seal: _Reader
 
 
-def _collect(reader, owner, intent, intent_raw, intent_sha):
+def _collect(reader, owner, intent, intent_raw, intent_sha, optional_selection=None):
+    require(
+        optional_selection is None or type(optional_selection) is semantics.Selection,
+        "semantic-selection",
+    )
+    if optional_selection is not None:
+        optional_selection._match(owner, intent_raw, intent_sha)
     files, unsafe, unknown, directories = {}, {}, {}, {}
     blocked = []
 
@@ -433,16 +440,23 @@ def _collect(reader, owner, intent, intent_raw, intent_sha):
     if marker is not None and not intent_ok:
         blocked.append("marker-without-intent")
     complete_ok = False
+    complete_version = None
     if completion is not None:
         if type(completion) is dict and intent_ok and marker_ok:
             try:
-                body = r.validate_handoff(
-                    owner,
-                    intent_raw,
-                    intent_sha,
-                    reader.raws[str(pair / "complete.json")][0],
-                    completion["sha256"],
-                )
+                complete_raw = reader.raws[str(pair / "complete.json")][0]
+                if optional_selection is None:
+                    body = r.validate_handoff(
+                        owner,
+                        intent_raw,
+                        intent_sha,
+                        complete_raw,
+                        completion["sha256"],
+                    )
+                else:
+                    body = optional_selection.completion(
+                        complete_raw, completion["sha256"], allow_historical=True
+                    )
                 require(
                     body["intent_file"]
                     == {
@@ -462,6 +476,7 @@ def _collect(reader, owner, intent, intent_raw, intent_sha):
                     "completion-marker",
                 )
                 complete_ok = True
+                complete_version = body["schema_version"]
             except (ValueError, TypeError, UnicodeError, RecursionError):
                 pass
         if not complete_ok:
@@ -480,7 +495,7 @@ def _collect(reader, owner, intent, intent_raw, intent_sha):
         status = "bootstrap-incomplete"
     else:
         status = "unused"
-    return dict(
+    result = dict(
         document_type="cmdmesh.proxmox.owner-retirement.attempt-observation",
         schema_version=1,
         binding=r.asdict(owner),
@@ -518,11 +533,35 @@ def _collect(reader, owner, intent, intent_raw, intent_sha):
         metadata_resolution_recorded=False,
         successor_native_admission_authorized=False,
     )
+    if optional_selection is not None:
+        optional_selection._match(owner, intent_raw, intent_sha)
+        result.update(
+            schema_version=2,
+            checkpoint_sha256=optional_selection.checkpoint_sha256,
+            publication_contract_sha256=optional_selection.contract_sha256,
+            completion_schema_version=complete_version,
+            completion_disposition=(
+                "historical-requalification-required"
+                if complete_version == 1
+                else (
+                    "semantic2-candidate"
+                    if complete_version == 2
+                    else "invalid" if completion is not None else "absent"
+                )
+            ),
+        )
+    return result
 
 
 @contextmanager
-def inspect_attempt(binding, intent_raw, intent_sha256):
+def _inspect_attempt(binding, intent_raw, intent_sha256, optional_selection=None):
     """Borrow true caller pair/native/application leases; never acquire/release them."""
+    require(
+        optional_selection is None or type(optional_selection) is semantics.Selection,
+        "semantic-selection",
+    )
+    if optional_selection is not None:
+        optional_selection._match(binding, intent_raw, intent_sha256)
     owner, binding_raw = r._binding(binding)
     intent = r._intent(owner, intent_raw, intent_sha256)
     expected_profile = r.state.canonical(profile.RUNTIME)
@@ -535,7 +574,13 @@ def inspect_attempt(binding, intent_raw, intent_sha256):
     reader.pair_key = owner.pair_key
     primary = None
     try:
-        body = _collect(reader, owner, intent, intent_raw, intent_sha256)
+        body = (
+            _collect(reader, owner, intent, intent_raw, intent_sha256)
+            if optional_selection is None
+            else _collect(
+                reader, owner, intent, intent_raw, intent_sha256, optional_selection
+            )
+        )
         raw = r.state.canonical(body)
         require(len(raw) <= OUTPUT_LIMIT, "output-limit")
         checksum = r.state.sha256(raw)
@@ -544,6 +589,8 @@ def inspect_attempt(binding, intent_raw, intent_sha256):
         reader.close_named()
         reader.check_events()
         r._close_binding(binding, owner, binding_raw)
+        if optional_selection is not None:
+            optional_selection.validate()
         # A composed caller may join this post-yield scan with other readers.
         # Do not add another directory walk after its final fixed probes.
         reader.enumerated = False
@@ -567,6 +614,8 @@ def inspect_attempt(binding, intent_raw, intent_sha256):
             "profile-changed",
         )
         r._close_binding(binding, owner, binding_raw)
+        if optional_selection is not None:
+            optional_selection.validate()
         reader.check_events()
     except BaseException as error:
         primary = error
@@ -594,3 +643,42 @@ def inspect_attempt(binding, intent_raw, intent_sha256):
         "profile-changed",
     )
     r._close_binding(binding, owner, binding_raw)
+    if optional_selection is not None:
+        optional_selection.validate()
+        require(
+            type(view.raw) is bytes
+            and type(view.sha256) is str
+            and view.seal is reader
+            and view.raw == raw
+            and view.sha256 == checksum
+            and r.state.canonical(body) == raw,
+            "semantic-memory",
+        )
+
+
+def inspect_attempt(binding, intent_raw, intent_sha256):
+    """Legacy schema1 forensics, never semantic2 admission or publication."""
+    return _inspect_attempt(binding, intent_raw, intent_sha256)
+
+
+def inspect_attempt_v2(
+    *,
+    binding,
+    checkpoint,
+    checkpoint_sha256,
+    intent_raw,
+    intent_sha256,
+    contract_raw,
+    contract_sha256,
+):
+    """Borrow caller leases and inspect explicit contract2 metadata without writes."""
+    selected = semantics.select(
+        binding=binding,
+        checkpoint=checkpoint,
+        checkpoint_sha256=checkpoint_sha256,
+        intent_raw=intent_raw,
+        intent_sha256=intent_sha256,
+        contract_raw=contract_raw,
+        contract_sha256=contract_sha256,
+    )
+    return _inspect_attempt(binding, intent_raw, intent_sha256, selected)
