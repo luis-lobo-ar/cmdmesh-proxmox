@@ -279,6 +279,11 @@ binds one expected write to actual parent/file events and the atomic publisher's
 closed receipt. It rejects unexpected mutations and retained-file drift. This
 leaf still requires an executor with real leases and current-state admission.
 
+The developing [phase-aware completion codec](docs/owner-phase-aware-completion.md)
+keeps historical handoff evidence separate from fresh stopped-guest or new-boot
+admission. Its version-2 contract and completion are metadata components;
+the executor and lost-callback recovery still require qualification.
+
 ## Terraform LXC module
 
 `terraform/modules/lxc` contains a `bpg/proxmox` module. The standalone example
