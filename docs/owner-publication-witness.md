@@ -54,10 +54,12 @@ unaccepted file; the witness never reconstructs a receipt from that file.
 Repeated cleanup is idempotent and cannot close a reused descriptor belonging to
 an unrelated resource. Ambiguous failed descriptor closes are not retried.
 
-Current completion validation uses the existing os-quiesced semantic format for
-local fixtures. It does not qualify stopped/new-epoch recovery. The explicit
-phase-aware completion/reconciliation contract and fresh current integration
-must be implemented before managed handoff publication is accepted.
+This witness's completion validation still uses the existing os-quiesced
+semantic format for local fixtures. The separate
+[phase-aware codecs](owner-phase-aware-completion.md) implement version-2
+contracts, completion and plans. Their integration with this witness, fresh
+current admission and reconciliation must pass qualification before managed
+handoff publication is accepted.
 
 Tests use disposable metadata and actual local inotify, procfd linking and file
 descriptors. They cover all four payloads, single-use/failure behavior, immutable
