@@ -40,10 +40,12 @@ and retains the pair lock until the failure-record attempt finishes.
 An operation error remains the primary error even when a subsequent lock-close
 fails; cleanup still attempts every owned lease exit.
 
-The coordinator now exposes admitted initialization, read-only initialization
-inspection and read-only lifecycle preparation/reinspection. Request dispatch,
-task polling and status remain unfinished. Local tests exercise real flocks and journal files with
-explicitly modeled current/kernel and producer/actor providers.
+The coordinator now implements admitted initialization, read-only initialization
+inspection, lifecycle preparation/reinspection, one observed native operation,
+captured-result validation and read-only status. The new operation path remains
+under qualification. Local tests use real flocks and journal files with explicitly
+modeled current/kernel and producer/actor providers. Managed execution and
+recovery acceptance remain separate requirements.
 
 The complete executor must also authenticate its executing source and qualified
 storage before native work. Immutable historical observers
@@ -179,10 +181,10 @@ failure path. An observed response survives failed ACK qualification without an
 ACK or result being published. The adapter itself sends no request, acquires no
 pair lease and grants no native authority.
 
-The future coordinator must own real pair exclusion, close current workers
-before its single POST, record the response before ACK qualification, poll only
-the acknowledged task and include both journal readers in its final joined
-closure. This scope does
+The coordinator owns real pair exclusion, closes current workers before its
+single POST, records the response before ACK qualification, polls only the
+acknowledged task and includes both journal readers in its final joined closure.
+This scope does
 not claim continuous absence of an unrelated transient child inside a newly
 created directory before a watcher can be armed, or an arbitrary-root syscall
 sandbox. Such a transient changes no accepted record or operation authority;
@@ -191,3 +193,62 @@ qualified protocol are preserved.
 
 Local tests use synthetic metadata and disposable local resources. They do not
 qualify a managed producer, filesystem, native lifecycle or independent restore.
+
+## Execute one prepared action
+
+`operate(admission=..., prepared_raw=..., prepared_sha256=...,
+allow_mutation=True, check_mode=False, timeout_seconds=240)` is an internal SDK
+entry point. It requires explicit boolean mutation permission and refuses check
+mode. The timeout must be an integer from 1 through 600 seconds and bounds native
+task polling; it is not a total preparation or operation deadline.
+
+The coordinator acquires its own pair, retired/target configuration and
+application leases. It matches the saved target, init identity, uptime floor and
+backup mount against fresh observations. It consumes one ready slot and records
+dispatch while the before-phase current worker is active, then fully closes that
+worker before releasing the target configuration lease for the native request.
+The other leases and immutable historical observers remain held.
+
+The HTTPS provider records actual send/receive clocks, TLS and a privacy-safe
+response. The coordinator durably appends `ack-observed` before qualifying the ACK
+and polls only that ACK's exact task. A delayed closing worker does not make the
+old dispatch timestamp an ACK deadline. An accepted terminal task is followed by
+target-lease reacquisition and a separately observed final guest phase. Final
+database, membership, named-file, memory and event checks use that phase's entry;
+the original before-phase entry is never repurposed.
+
+The returned dictionary contains canonical operation records and their hashes,
+before/final current evidence and the native outcome. It remains a candidate for
+independent acceptance. Application writes, backups, rebuilds, restore and
+successor permission are explicitly unverified. The application remains quiesced.
+
+`validate_result(admission=..., prepared_raw=..., prepared_sha256=...,
+result=...)` checks a captured return without IO. It reconstructs only v4
+documents and checks the recorded response/ACK/task chain against the prepared
+target and current evidence. It bounds expanded JSON before encoding, validates
+a private snapshot and rechecks the original caller-owned input before returning.
+It does not inspect a live host or accept the
+result's head on the controller's behalf.
+
+After slot consumption, lost responses, invalid ACKs, timeouts and failed final
+checks leave unqualified evidence. A best-effort v4 failure record is attempted
+while pair exclusion is still held. It can also block a candidate published
+before a late closing failure. The coordinator never retries a native POST,
+removes a failure barrier, adopts ambient HEAD or resets either historical
+namespace. Preserve the evidence and use an independently reviewed recovery
+procedure after an uncertain outcome.
+
+## Recheck an accepted action
+
+`status(admission=..., prepared_raw=..., prepared_sha256=...,
+accepted_head_sha256=..., prior_runtime_raw=..., prior_runtime_sha256=...,
+check_mode=False)` reads an externally accepted ready head. It checks that the
+recorded operation belongs to the selected preparation, rechecks its exact task
+and observes current state under its own leases. It creates no files and sends
+no POST.
+
+After shutdown, supply the explicit running prior from the accepted result's
+`before.observation`, encoded canonically with its SHA256. Status requires it to
+match the recorded prior exactly. After resume, omit the prior override. A stale,
+pending, foreign or failed head refuses status; status cannot turn an uncertain
+operation into an accepted one.
