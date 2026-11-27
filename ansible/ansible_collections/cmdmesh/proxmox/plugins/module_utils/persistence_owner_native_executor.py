@@ -861,12 +861,10 @@ def _observe_native_namespace(binding, mount, *, fixed):
 
 
 class _NativeJournalSeal(_NativeSeal):
-    """Immutable accepted ready chain, including used slots; no journal writes."""
+    """Exact quiet-boundary chain, including used slots; no journal writes."""
 
     def __init__(self, binding, mount, view):
-        require(
-            type(view) is journal.View and view.head["state"] == "ready", "ready-view"
-        )
+        require(type(view) is journal.View, "journal-view")
         super().__init__(binding, mount, fixed=False)
         # New FDs must be releasable even if extended construction fails.
         self._held = None
@@ -956,3 +954,251 @@ def _observe_ready_journal(binding, mount, *, accepted_head_sha256):
             if primary is None:
                 raise
             primary.add_note("secondary ready-journal observer release failure")
+
+
+class _ImmutableNativeJournal(_NativeSeal):
+    """Retain accepted history and each published phase across intended writes.
+
+    HEAD and the new slot's membership are mutable only in the fixed primitive
+    windows. Prior slots, all immutable files, and their event queues survive
+    every window. This is a sole-writer adapter, not a syscall sandbox.
+    """
+
+    def __init__(self, binding, mount, view):
+        require(
+            type(view) is journal.View and view.head["state"] == "ready", "ready-view"
+        )
+        super().__init__(binding, mount, fixed=False)
+        try:
+            self.retain(view)
+            root = journal.RUNTIME_ROOT
+            self._held = None
+            self.directory(root, shared=True)
+            self.membership(root, shared=True)
+            require(
+                self.members[str(root)][1]
+                == tuple(sorted(("runtime.json", binding.pair_key))),
+                "native-root-members",
+            )
+            pair = root / binding.pair_key
+            for name, names in view.seal.members.items():
+                path = Path(name)
+                if path != pair:
+                    self.exact_directory(
+                        path,
+                        names,
+                        private=True,
+                        expected=list(view.seal.directories[name]),
+                    )
+            self.freeze_fds()
+            self.check_memberships()
+            self.close_named()
+            self.check_events()
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note(
+                    "secondary immutable journal construction cleanup failure"
+                )
+            raise
+
+    def retain(self, view):
+        """Add immutable files monotonically; never rebase an existing file."""
+        require(type(view) is journal.View and not self.closed, "journal-view")
+        self._held = None
+        paths = list(self._native_paths)
+        root = journal.RUNTIME_ROOT
+        for name, identity in view.seal.directories.items():
+            path = Path(name)
+            require(
+                path == root.parent or path.is_relative_to(root), "native-view-path"
+            )
+            self._directory(path, private=True)
+            require(
+                tuple(self.nodes[name]["identity"][:5]) == tuple(identity),
+                "native-view-directory",
+            )
+            paths.append(path)
+        for name, identity in view.seal.files.items():
+            path = Path(name)
+            require(path.is_relative_to(root), "native-view-file")
+            if path == root / self.pair_key / "HEAD.json":
+                continue
+            if name not in self.raws:
+                item = self.file(path)
+                require(type(item) is dict, "native-view-file")
+            require(
+                tuple(self.nodes[name]["identity"]) == tuple(identity),
+                "native-view-file-identity",
+            )
+            paths.append(path)
+        self._native_paths = tuple(dict.fromkeys(paths))
+        self._native_fixed = (
+            self._native_fixed[0],
+            self._native_paths,
+            state.canonical(self._native_mount),
+            storage._configuration(),
+            os.getpid(),
+        )
+        self.freeze_fds()
+
+
+class _NativeJournal:
+    """One fixed native request, under the coordinator's real pair EX lease.
+
+    A failed publication poisons the adapter. It never retries a primitive,
+    adopts a new ambient HEAD, posts a request, or clears a failure barrier.
+    The latest returned Pending is retained for the coordinator's failure path.
+    """
+
+    def __init__(self, binding, mount, accepted_head_sha256):
+        self.binding = binding
+        self.mount = observe.decode(state.canonical(mount))
+        self.head = accepted_head_sha256
+        self.pending = None
+        self.candidate = None
+        self.immutable = None
+        self.quiet = None
+        self.closed = False
+        self.poisoned = False
+        self._pid = os.getpid()
+        try:
+            view = journal._inspect(binding, accepted_head_sha256)
+            self.immutable = _ImmutableNativeJournal(binding, self.mount, view)
+            self.quiet = _NativeJournalSeal(binding, self.mount, view)
+            self.check()
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note("secondary native journal constructor cleanup failure")
+            raise
+
+    def check(self):
+        require(
+            not self.closed and not self.poisoned and os.getpid() == self._pid,
+            "journal-closed-or-poisoned",
+        )
+        try:
+            require(
+                self.immutable is not None and self.quiet is not None,
+                "journal-boundary",
+            )
+            for held in (self.immutable, self.quiet):
+                held.check_memberships()
+            for held in (self.immutable, self.quiet):
+                held.close_named()
+            for held in (self.immutable, self.quiet):
+                held.check_events()
+        except BaseException:
+            self.poisoned = True
+            raise
+
+    def _before(self, stage):
+        require(not self.closed and not self.poisoned, "journal-closed-or-poisoned")
+        count = -1 if self.pending is None else len(self.pending.phases.records)
+        wanted = (
+            -1
+            if stage == "begin"
+            else (
+                len(journal.STAGES)
+                if stage == "complete"
+                else journal.STAGES.index(stage)
+            )
+        )
+        require(count == wanted and self.candidate is None, "journal-stage")
+        self.check()
+        # From this point any exception is terminal for this adapter, including
+        # a primitive that publishes successfully and then fails before return.
+        self.poisoned = True
+        self.quiet.release()
+        self.quiet = None
+
+    def _after(self, head):
+        view = journal._inspect(self.binding, head)
+        # Drain existing policies before arming guards for the new filenames.
+        # Never clear or replace the immutable history observer/event queue.
+        self.immutable.check_memberships()
+        self.immutable.close_named()
+        self.immutable.check_events()
+        self.immutable.retain(view)
+        self.quiet = _NativeJournalSeal(self.binding, self.mount, view)
+        self.head = head
+        self.poisoned = False
+        self.check()
+
+    def begin(self, *, kind, prepared_sha256):
+        self._before("begin")
+        self.pending = journal._begin(self.binding, self.head, kind, prepared_sha256)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def dispatch(self, payload):
+        self._before("dispatch")
+        self.pending = journal._append_phase(self.pending, "dispatch", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def observed(self, payload):
+        self._before("ack-observed")
+        self.pending = journal._append_phase(self.pending, "ack-observed", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def ack(self, payload):
+        self._before("ack")
+        self.pending = journal._append_phase(self.pending, "ack", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def terminal(self, payload):
+        self._before("terminal")
+        self.pending = journal._append_phase(self.pending, "terminal", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def complete(self, evidence):
+        self._before("complete")
+        self.candidate = journal._complete(self.pending, evidence)
+        self._after(self.candidate.head_sha256)
+        return self.candidate
+
+    def release(self):
+        if self.closed:
+            return
+        self.closed = True
+        primary = None
+        for held in (self.quiet, self.immutable):
+            if held is not None:
+                try:
+                    held.release()
+                except BaseException as error:
+                    if primary is None:
+                        primary = error
+                    else:
+                        primary.add_note(
+                            "secondary native journal observer release failure"
+                        )
+        if primary is not None:
+            raise primary
+
+
+@contextmanager
+def _native_journal(binding, mount, *, accepted_head_sha256):
+    """Own local journal observers only; the coordinator owns all actual leases."""
+    held = _NativeJournal(binding, mount, accepted_head_sha256)
+    primary = None
+    try:
+        yield held
+        held.check()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            held.release()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("secondary native journal release failure")

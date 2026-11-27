@@ -163,9 +163,26 @@ observer interval. Stable assumptions must match and uptime may advance but not
 decrease. The inspection reports the original selected preparation and a fresh
 observation; it does not replace the preparation or advance journal authority.
 
-The coordinator's future writer uses a source-fixed begin/append/complete
-sequence under real pair exclusion, continuous immutable-old file observers,
-exact quiet-boundary prefix checks and final candidate closure. This scope does
+The internal journal adapter now implements a source-fixed begin, four append
+phases and completion over the unchanged v4 primitives. It retains immutable
+runtime/profile/genesis and accepted prior slots across each intended write.
+New phase files are added to the retained observer monotonically. A separate
+exact-chain observer covers each quiet boundary, including the final candidate.
+Only the affected HEAD/current-slot boundary guard is retired for a write;
+the immutable observer and its event queue are never reset.
+
+Each adapter instance can consume only one operation. Wrong phases and duplicate
+begin calls refuse before publication. Once publication starts, any failure
+poisons that adapter, including a primitive that writes and then fails before
+returning. The latest returned Pending remains available to the coordinator's
+failure path. An observed response survives failed ACK qualification without an
+ACK or result being published. The adapter itself sends no request, acquires no
+pair lease and grants no native authority.
+
+The future coordinator must own real pair exclusion, close current workers
+before its single POST, record the response before ACK qualification, poll only
+the acknowledged task and include both journal readers in its final joined
+closure. This scope does
 not claim continuous absence of an unrelated transient child inside a newly
 created directory before a watcher can be armed, or an arbitrary-root syscall
 sandbox. Such a transient changes no accepted record or operation authority;
