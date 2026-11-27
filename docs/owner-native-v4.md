@@ -40,10 +40,10 @@ and retains the pair lock until the failure-record attempt finishes.
 An operation error remains the primary error even when a subsequent lock-close
 fails; cleanup still attempts every owned lease exit.
 
-These are private lease helpers, not an admitted operation API. Their local tests
-exercise real flocks with explicitly modeled current/native providers. The
-admitted initializer, preparation, request dispatch, task polling and status API
-are still unfinished.
+The coordinator now exposes admitted initialization and read-only initialization
+inspection. Lifecycle preparation, request dispatch, task polling and status
+remain unfinished. Local tests exercise real flocks and journal files with
+explicitly modeled current/kernel and producer/actor providers.
 
 The complete executor must also authenticate its executing source and qualified
 storage before native work. Immutable historical observers
@@ -84,6 +84,50 @@ not authenticate the installed producer, verify a live filesystem, acquire a
 lease or authorize a native request. `describe()` keeps those authority claims
 false. The coordinator still needs actual held historical/source controls and
 fresh intrinsic filesystem/current checks before it can dispatch work.
+
+## Inspect or initialize unused v4 metadata
+
+The internal SDK entry points are `genesis_sha256(admission)`,
+`inspect_initialization(admission=..., expected_head_sha256=..., check_mode=...)`
+and `initialize(admission=..., expected_head_sha256=...,
+allow_mutation=True, check_mode=False)`.
+
+The caller supplies a `NativeAdmission` and authenticates the installed producer.
+An externally selected head must match the derived genesis. Inspection creates
+neither a mutex nor journal metadata and supports check mode. Initialization
+requires exact boolean permission in normal mode; it accepts absent or complete
+unused metadata only. A foreign, partial or used namespace is preserved and
+refused. Repeated explicit initialization of an unused genesis is idempotent.
+
+Both operations acquire their own pair/configuration/application locks. Original
+completion forensics, immutable resources, actor/source controls and matched live
+filesystem facts remain held across two separately closed current observations.
+Initialization's short native bootstrap lock is held between those current
+workers, never during SQL. Database and joined observer checks run before the
+write and after the final worker. Every resource and lease exit precedes return.
+
+Actual native directory and file descriptors must belong to the same qualified
+mount as the fixed common parent. A separate submount or bind mount is refused,
+even if its device/inode happens to match. Existing native parents remain held
+through initialization. Afterwards, an immutable unused-namespace observer joins
+the final membership, named-file and event checks and remains active through all
+outer exits. That includes absence observations during readonly inspection and
+same-byte writes to the newly initialized HEAD. Other valid sibling owner pairs
+may change without invalidating this owner's observation.
+
+The result is a canonical candidate with the selected head, before/after current
+evidence, initialized/would-change/changed fields and an explicit write-attempt
+flag. A late current, observer or lease-exit failure suppresses it. Existing
+partial or complete metadata remains for explicit inspection after a failure;
+the initializer does not remove evidence, compensate or retry. It does not
+reinterpret the metadata Admission's readonly action as a metadata-publication
+grant: native initialization has a distinct nominal admission and permission
+boundary, and the live filesystem is matched through fixed observation primitives.
+
+An initialized genesis supplies no native or successor permission. No native
+request, ACK recovery or legacy journal mutation occurs. Managed producer
+qualification and independent acceptance of the returned candidate are still
+caller responsibilities. The lifecycle and recovery requirements below remain.
 
 For each consumed operation it must issue at most one native request. The
 privacy-safe response observation must be durably recorded as `ack-observed`
