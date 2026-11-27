@@ -7,7 +7,7 @@ import unittest
 from unittest import mock
 
 from test_persistence_owner_execution_admission import pure_call
-from test_persistence_owner_semantics import SemanticSelectionTests
+import test_persistence_owner_semantics as semantic_fixture
 
 
 class NativeHandoffTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class NativeHandoffTests(unittest.TestCase):
             "ansible_collections.cmdmesh.proxmox.plugins.module_utils."
             "persistence_owner_native_handoff"
         )
-        self.fixture = SemanticSelectionTests("runTest")
+        self.fixture = semantic_fixture.SemanticSelectionTests("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.case, self.r = self.fixture.case, self.fixture.r

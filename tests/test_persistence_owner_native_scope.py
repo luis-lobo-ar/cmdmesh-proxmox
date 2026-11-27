@@ -10,7 +10,7 @@ import os
 import unittest
 from unittest import mock
 
-from test_persistence_owner_native_handoff import NativeHandoffTests
+import test_persistence_owner_native_handoff as handoff_fixture
 from test_persistence_owner_phase_admission import admission_inputs
 
 
@@ -20,7 +20,7 @@ class NativeScopeTests(unittest.TestCase):
             "ansible_collections.cmdmesh.proxmox.plugins.module_utils."
             "persistence_owner_native_executor"
         )
-        self.fixture = NativeHandoffTests("runTest")
+        self.fixture = handoff_fixture.NativeHandoffTests("runTest")
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
         self.handoff = self.fixture.select()
