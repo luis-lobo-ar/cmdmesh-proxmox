@@ -40,9 +40,9 @@ and retains the pair lock until the failure-record attempt finishes.
 An operation error remains the primary error even when a subsequent lock-close
 fails; cleanup still attempts every owned lease exit.
 
-The coordinator now exposes admitted initialization and read-only initialization
-inspection. Lifecycle preparation, request dispatch, task polling and status
-remain unfinished. Local tests exercise real flocks and journal files with
+The coordinator now exposes admitted initialization, read-only initialization
+inspection and read-only lifecycle preparation/reinspection. Request dispatch,
+task polling and status remain unfinished. Local tests exercise real flocks and journal files with
 explicitly modeled current/kernel and producer/actor providers.
 
 The complete executor must also authenticate its executing source and qualified
@@ -134,6 +134,43 @@ privacy-safe response observation must be durably recorded as `ack-observed`
 before acknowledgment qualification. Uncertain responses or failed final checks
 must remain unqualified without replaying the native request. The legacy v3
 journal and any pending operation remain unchanged.
+
+## Prepare and inspect a lifecycle action
+
+`prepare(admission=..., kind="shutdown"|"resume", accepted_head_sha256=...,
+prior_runtime_raw=..., prior_runtime_sha256=..., check_mode=...)` observes an
+externally selected ready predecessor. It creates no slot or phase record and
+sends no native request. Shutdown requires a running, quiesced guest and no
+prior override. Resume requires an explicit valid running prior and a stopped
+guest. Both support read-only check mode.
+
+Original history, application/resource/actor controls, qualified native parents
+and an immutable ready-chain observer remain held across two separately closed
+current workers. The ready observer covers runtime/profile/genesis/HEAD and all
+accepted prior operation files. A pending or stale head refuses preparation;
+filesystem identity, content metadata, membership, transient events and final
+resource exits can also suppress the candidate.
+
+The canonical prepared record binds the native admission and producer, exact
+predecessor, kind, stable entry, init identity, uptime floor, backup mount and
+explicit prior. Its current observation is historical evidence, not an active
+lease or dispatch permission. The caller independently selects the returned raw
+bytes and hash.
+
+`inspect_transition(admission=..., prepared_raw=..., prepared_sha256=...,
+check_mode=...)` reobserves those assumptions under its own complete lease and
+observer interval. Stable assumptions must match and uptime may advance but not
+decrease. The inspection reports the original selected preparation and a fresh
+observation; it does not replace the preparation or advance journal authority.
+
+The coordinator's future writer uses a source-fixed begin/append/complete
+sequence under real pair exclusion, continuous immutable-old file observers,
+exact quiet-boundary prefix checks and final candidate closure. This scope does
+not claim continuous absence of an unrelated transient child inside a newly
+created directory before a watcher can be armed, or an arbitrary-root syscall
+sandbox. Such a transient changes no accepted record or operation authority;
+persistent unknown state remains refused. Existing journal primitives and their
+qualified protocol are preserved.
 
 Local tests use synthetic metadata and disposable local resources. They do not
 qualify a managed producer, filesystem, native lifecycle or independent restore.
