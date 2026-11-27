@@ -295,21 +295,21 @@ def _post_bound(binding, action, create_parameters=None, *, owner_context=None):
                 complete = True
                 try:
                     connection.request("POST", path, encoded_parameters, headers)
-                    response = connection.getresponse()
-                    status = response.status
-                    content_type = response.getheader("Content-Type", "")
-                    body = response.read(262145)
-                    if response.length is None and not response.chunked:
-                        complete = False
-                        if len(body) < 262145:
-                            tail = response.read(1)
-                            body += tail
-                            complete = not tail and response.isclosed()
-                    else:
-                        complete = (
-                            response.length == 0
-                            or (response.length is None and response.isclosed())
-                        ) and (not response.chunked or response.chunk_left is None)
+                    with connection.getresponse() as response:
+                        status = response.status
+                        content_type = response.getheader("Content-Type", "")
+                        body = response.read(262145)
+                        if response.length is None and not response.chunked:
+                            complete = False
+                            if len(body) < 262145:
+                                tail = response.read(1)
+                                body += tail
+                                complete = not tail and response.isclosed()
+                        else:
+                            complete = (
+                                response.length == 0
+                                or (response.length is None and response.isclosed())
+                            ) and (not response.chunked or response.chunk_left is None)
                 except (OSError, http.client.HTTPException) as error:
                     if owner_context is None:
                         raise

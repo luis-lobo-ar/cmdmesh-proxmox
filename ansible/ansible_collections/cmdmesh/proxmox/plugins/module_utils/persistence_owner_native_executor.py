@@ -1,20 +1,24 @@
-"""Private lease machinery for the developing native-v4 coordinator.
+"""Self-leased native-v4 lifecycle machinery under managed qualification.
 
-There is no admitted initializer, preparation, dispatch or status API yet. These
-helpers acquire real locks but do not authenticate installed producer/storage
-qualifications or grant native permission. Legacy journal state is never used
-for v4 failure reporting.
+The caller authenticates its installed producer. NativeAdmission selects the
+historical/source/storage assertions; actual observers and locks close before
+returning a candidate. Preparation, one observed request, exact-task polling,
+captured-result validation and read-only status use the separate v4 journal.
+Legacy journal state is never used for v4 failure reporting.
 """
 
 from contextlib import ExitStack, contextmanager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 import os
 from pathlib import Path
+import time
 
 from ansible_collections.cmdmesh.proxmox.plugins.module_utils import (
     persistence_owner_current as current,
     persistence_owner_metadata_executor as metadata,
+    persistence_owner_native_admission as admission_codec,
     persistence_owner_native_handoff as handoffs,
+    persistence_owner_native_storage as storage,
     persistence_owner_phase_admission as phases,
     persistence_owner_request_journal as journal,
 )
@@ -24,6 +28,1031 @@ runtime, state, observe = current.runtime, current.state, current.observe
 
 def require(value, code):
     state.require(value, "persistence-owner-native-executor-" + code)
+
+
+def genesis_sha256(admission):
+    """Derive the proposed unused head without observing or creating metadata."""
+    require(type(admission) is admission_codec.NativeAdmission, "admission")
+    admission.validate()
+    return journal._digest(journal._genesis(admission.handoff.journal_binding))
+
+
+@contextmanager
+def _filesystem(admission):
+    """Match actual fixed-role facts without reinterpreting a metadata write grant."""
+    base = admission.metadata_admission
+    qualified = metadata._decode(
+        base.filesystem_qualification_raw, base.filesystem_qualification_sha256
+    )
+    with metadata.filesystem.observe_subject(admission.selection) as observed:
+        metadata.filesystem._match_subject(observed.raw, qualified)
+        native = metadata._decode(
+            admission.filesystem_qualification_raw,
+            admission.filesystem_qualification_sha256,
+        )
+        admission_codec._probe(native["probe"], qualified)
+        admission.validate()
+        yield observed
+        admission.validate()
+
+
+def _initialization(admission, expected_head_sha256, check_mode, allow_mutation):
+    require(type(admission) is admission_codec.NativeAdmission, "admission")
+    require(type(check_mode) is bool, "check-mode")
+    write = allow_mutation is not None
+    if write:
+        require(
+            type(allow_mutation) is bool and allow_mutation and not check_mode,
+            "mutation-mode",
+        )
+    state.digest(expected_head_sha256)
+    require(expected_head_sha256 == genesis_sha256(admission), "genesis")
+    handoff, selection = admission.handoff, admission.selection
+    base = admission.metadata_admission
+    cp = selection._private_checkpoint
+    values = (*admission._values(), expected_head_sha256, check_mode, allow_mutation)
+    inputs = metadata._Inputs(base, "os_quiesced", None, values)
+    expected = metadata._requalification_capture(
+        handoff.historical, handoff.capture_raw, handoff.capture_sha256
+    )
+    with _leased(handoff, "shutdown", None) as scope:
+        with metadata._Stack() as stack:
+            # Retain the entire original publication before resource setup/SQL.
+            original = stack.enter_context(
+                metadata._complete_forensics(
+                    handoff.historical, handoff.complete_raw, handoff.complete_sha256
+                )
+            )
+            require(
+                metadata.previous._projection(
+                    metadata._decode(original.raw, original.sha256)
+                )
+                == metadata.previous._projection(expected),
+                "historical-projection",
+            )
+            held = stack.enter_context(
+                metadata.resources.hold_owner_resources(
+                    selection=selection, entry=scope.entry, action="requalify-complete"
+                )
+            )
+            actors = stack.enter_context(metadata._hold_actor_controls(base))
+            filesystem = stack.enter_context(_filesystem(admission))
+            facts = metadata._decode(filesystem.raw, filesystem.sha256)
+            role = facts["roles"]["bootstrap-lock"]
+            mount = facts["mounts"][role["mount_index"]]
+            native_parents = stack.enter_context(
+                _observe_native_namespace(handoff.journal_binding, mount, fixed=False)
+            )
+            require(
+                facts["subject"]["host_epoch"]
+                == {
+                    key: scope.entry["host"][key]
+                    for key in ("boot_id", "mount_namespace")
+                },
+                "filesystem-host-epoch",
+            )
+            before = storage._inspect_initialization(handoff.journal_binding)
+            with _phase_current(scope):
+                pass
+            e1 = scope.latest.evidence
+            storage._close_initialization(before)
+            holders = [held, actors, original.seal, filesystem, native_parents]
+            admission.validate()
+            metadata._post_worker(cp, scope, e1, None, holders, inputs)
+            changed = False
+            if write:
+                # Both SQL/current workers are closed throughout the short mutex.
+                initialized = storage._initialize_journal(handoff.journal_binding)
+                require(
+                    type(initialized) is dict
+                    and set(initialized) == {"changed", "head_sha256"}
+                    and type(initialized["changed"]) is bool
+                    and initialized["changed"] is before.would_change
+                    and initialized["head_sha256"] == expected_head_sha256,
+                    "initializer-result",
+                )
+                changed = initialized["changed"]
+            after = storage._inspect_initialization(handoff.journal_binding)
+            require(not write or not after.would_change, "initialization-incomplete")
+            native = stack.enter_context(
+                _observe_native_namespace(handoff.journal_binding, mount, fixed=True)
+            )
+            holders.append(native)
+            with _phase_current(scope):
+                pass
+            e2 = scope.latest.evidence
+            storage._close_initialization(after)
+            admission.validate()
+            raw = state.canonical(
+                dict(
+                    document_type="cmdmesh.proxmox.owner-native-initialization-candidate",
+                    schema_version=1,
+                    operation="initialize" if write else "inspect-initialization",
+                    checkpoint_sha256=selection.checkpoint_sha256,
+                    complete_sha256=handoff.complete_sha256,
+                    original_contract_sha256=handoff.original_contract_sha256,
+                    executing_contract_sha256=selection.contract_sha256,
+                    producer_manifest_sha256=base.producer_manifest_sha256,
+                    handoff_review_sha256=admission.handoff_review_sha256,
+                    filesystem_qualification_sha256=admission.filesystem_qualification_sha256,
+                    head_sha256=expected_head_sha256,
+                    initialized=not after.would_change,
+                    would_change=before.would_change,
+                    changed=changed,
+                    v4_metadata_write_attempted=write,
+                    initial_closing_current=e1,
+                    final_closing_current=e2,
+                    candidate_only=True,
+                    native_action_dispatched=False,
+                    original_native_operation_qualified=False,
+                    ack_recovered=False,
+                    successor_native_admission_authorized=False,
+                )
+            )
+            result = metadata.Candidate(raw, state.sha256(raw))
+            metadata._post_worker(cp, scope, e2, None, holders, inputs)
+        require(scope.pending is None, "initialization-pending")
+    admission.validate()
+    inputs.fast()
+    require(
+        scope.pending is None
+        and type(result.raw) is bytes
+        and result.raw == raw
+        and result.sha256 == state.sha256(raw),
+        "initialization-exit-memory",
+    )
+    return result
+
+
+def inspect_initialization(*, admission, expected_head_sha256, check_mode=False):
+    """Read-only absent/unused inspection; no mutex, namespace, native or adoption."""
+    return _initialization(admission, expected_head_sha256, check_mode, None)
+
+
+def initialize(
+    *, admission, expected_head_sha256, allow_mutation=False, check_mode=False
+):
+    """Explicit unused-v4 metadata only; every resource exit precedes the return."""
+    require(type(allow_mutation) is bool, "mutation-mode")
+    return _initialization(admission, expected_head_sha256, check_mode, allow_mutation)
+
+
+PREPARED = "cmdmesh.proxmox.owner-native-v4-transition.prepared"
+PREPARED_LIMIT = 8388608
+PREPARED_FALSE = (
+    "native_action_dispatched",
+    "original_native_operation_qualified",
+    "ack_recovered",
+    "successor_native_admission_authorized",
+)
+
+
+def _references(admission):
+    admission.validate()
+    return dict(
+        checkpoint_sha256=admission.selection.checkpoint_sha256,
+        native_admission_sha256=state.sha256(admission.describe()),
+        producer_manifest_sha256=admission.metadata_admission.producer_manifest_sha256,
+    )
+
+
+def _preparation_inputs(admission, kind, head, prior_raw, prior_sha, check_mode):
+    require(type(admission) is admission_codec.NativeAdmission, "admission")
+    require(type(kind) is str and kind in {"shutdown", "resume"}, "kind")
+    require(type(check_mode) is bool, "check-mode")
+    if kind == "resume":
+        require(type(prior_raw) is bytes and type(prior_sha) is str, "resume-prior")
+    else:
+        require(prior_raw is prior_sha is None, "shutdown-prior")
+    state.digest(head)
+    phase = "os_quiesced" if kind == "shutdown" else "stopped"
+    admission.validate()
+    _, prior = metadata._preflight(
+        admission.metadata_admission, phase, prior_raw, prior_sha, check_mode
+    )
+    return phase, prior
+
+
+@contextmanager
+def _retained_readonly(admission, scope):
+    """Keep original history and current resources; supply no operation grant."""
+    require(type(scope) is _Scope and scope.handoff is admission.handoff, "scope")
+    scope.check()
+    handoff, selection = admission.handoff, admission.selection
+    expected = metadata._requalification_capture(
+        handoff.historical, handoff.capture_raw, handoff.capture_sha256
+    )
+    with metadata._Stack() as stack:
+        original = stack.enter_context(
+            metadata._complete_forensics(
+                handoff.historical, handoff.complete_raw, handoff.complete_sha256
+            )
+        )
+        require(
+            metadata.previous._projection(
+                metadata._decode(original.raw, original.sha256)
+            )
+            == metadata.previous._projection(expected),
+            "historical-projection",
+        )
+        held = stack.enter_context(
+            metadata.resources.hold_owner_resources(
+                selection=selection, entry=scope.entry, action="requalify-complete"
+            )
+        )
+        actors = stack.enter_context(
+            metadata._hold_actor_controls(admission.metadata_admission)
+        )
+        filesystem = stack.enter_context(_filesystem(admission))
+        facts = metadata._decode(filesystem.raw, filesystem.sha256)
+        require(
+            facts["subject"]["host_epoch"]
+            == {
+                key: scope.entry["host"][key] for key in ("boot_id", "mount_namespace")
+            },
+            "filesystem-host-epoch",
+        )
+        mount = facts["mounts"][facts["roles"]["bootstrap-lock"]["mount_index"]]
+        parents = stack.enter_context(
+            _observe_native_namespace(handoff.journal_binding, mount, fixed=False)
+        )
+        yield [held, actors, original.seal, filesystem, parents], mount
+
+
+def prepare(
+    *,
+    admission,
+    kind,
+    accepted_head_sha256,
+    prior_runtime_raw=None,
+    prior_runtime_sha256=None,
+    check_mode=False
+):
+    """Observe a ready predecessor without claiming a slot or sending a request."""
+    phase, prior = _preparation_inputs(
+        admission,
+        kind,
+        accepted_head_sha256,
+        prior_runtime_raw,
+        prior_runtime_sha256,
+        check_mode,
+    )
+    references = _references(admission)
+    inputs = metadata._Inputs(
+        admission.metadata_admission,
+        phase,
+        prior,
+        (
+            *admission._values(),
+            kind,
+            accepted_head_sha256,
+            prior_runtime_raw,
+            prior_runtime_sha256,
+            check_mode,
+            state.canonical(references),
+        ),
+    )
+    cp = admission.selection._private_checkpoint
+    with _leased(admission.handoff, kind, prior) as scope:
+        with _retained_readonly(admission, scope) as (holders, mount):
+            with _observe_ready_journal(
+                admission.handoff.journal_binding,
+                mount,
+                accepted_head_sha256=accepted_head_sha256,
+            ) as native:
+                all_holders = [*holders, native]
+                store_raw = state.canonical(
+                    observe.mount_facts(scope.request["backup_store"])
+                )
+                with _phase_current(scope):
+                    pass
+                metadata._post_worker(
+                    cp, scope, scope.latest.evidence, prior, all_holders, inputs
+                )
+                with _phase_current(scope):
+                    pass
+                before = scope.latest.evidence
+                require(
+                    state.canonical(observe.mount_facts(scope.request["backup_store"]))
+                    == store_raw,
+                    "backup-mount",
+                )
+                body = dict(
+                    document_type=PREPARED,
+                    schema_version=1,
+                    **references,
+                    predecessor_sha256=accepted_head_sha256,
+                    kind=kind,
+                    entry=metadata.transition._entry_identity(scope.entry),
+                    init_identity=metadata.transition._init_identity(before),
+                    uptime_floor=before["observation"]["guest"]["runtime"]["uptime"],
+                    backup_store=observe.decode(store_raw),
+                    prior_runtime=prior,
+                    before_current=before,
+                    candidate_only=True,
+                    **dict.fromkeys(PREPARED_FALSE, False),
+                )
+                raw = state.canonical(body)
+                require(0 < len(raw) <= PREPARED_LIMIT, "prepared-limit")
+                result = metadata.Candidate(raw, state.sha256(raw))
+                admission.validate()
+                metadata._post_worker(cp, scope, before, prior, all_holders, inputs)
+        require(scope.pending is None, "preparation-pending")
+    inputs.fast()
+    admission.validate()
+    require(
+        result.raw == raw and result.sha256 == state.sha256(raw),
+        "preparation-exit-memory",
+    )
+    return result
+
+
+def _decode_prepared(admission, raw, checksum):
+    require(type(admission) is admission_codec.NativeAdmission, "admission")
+    require(type(raw) is bytes and 0 < len(raw) <= PREPARED_LIMIT, "prepared-limit")
+    body = metadata._decode(raw, checksum)
+    state.keys(
+        body,
+        {
+            "document_type",
+            "schema_version",
+            "checkpoint_sha256",
+            "native_admission_sha256",
+            "producer_manifest_sha256",
+            "predecessor_sha256",
+            "kind",
+            "entry",
+            "init_identity",
+            "uptime_floor",
+            "backup_store",
+            "prior_runtime",
+            "before_current",
+            "candidate_only",
+            *PREPARED_FALSE,
+        },
+    )
+    require(
+        body["document_type"] == PREPARED
+        and type(body["schema_version"]) is int
+        and body["schema_version"] == 1
+        and body["candidate_only"] is True
+        and all(body[key] is False for key in PREPARED_FALSE),
+        "prepared-schema",
+    )
+    require(
+        type(body["kind"]) is str and body["kind"] in {"shutdown", "resume"}, "kind"
+    )
+    state.digest(body["predecessor_sha256"])
+    state.integer(body["uptime_floor"], 0, 2**63 - 1)
+    phases._json(body)
+    references = _references(admission)
+    require(
+        all(body[key] == value for key, value in references.items()),
+        "prepared-admission",
+    )
+    phase = "os_quiesced" if body["kind"] == "shutdown" else "stopped"
+    if body["kind"] == "shutdown":
+        require(body["prior_runtime"] is None, "shutdown-prior")
+    else:
+        require(type(body["prior_runtime"]) is dict, "resume-prior")
+        current.validate_current(
+            admission.selection._private_checkpoint,
+            "os_quiesced",
+            dict(
+                phase="os_quiesced",
+                observation=body["prior_runtime"],
+                guest_image_verified=True,
+            ),
+        )
+    current.validate_current(
+        admission.selection._private_checkpoint, phase, body["before_current"]
+    )
+    require(
+        body["uptime_floor"]
+        == body["before_current"]["observation"]["guest"]["runtime"]["uptime"]
+        and state.canonical(body["init_identity"])
+        == state.canonical(metadata.transition._init_identity(body["before_current"])),
+        "prepared-current",
+    )
+    require(
+        type(body["entry"]) is dict and type(body["backup_store"]) is dict,
+        "prepared-basis",
+    )
+    return body
+
+
+def _compatible_preparation(saved, fresh):
+    ignored = {"before_current", "uptime_floor"}
+    require(
+        state.canonical({k: v for k, v in saved.items() if k not in ignored})
+        == state.canonical({k: v for k, v in fresh.items() if k not in ignored}),
+        "prepared-basis-changed",
+    )
+    require(fresh["uptime_floor"] >= saved["uptime_floor"], "prepared-uptime-decreased")
+
+
+def inspect_transition(*, admission, prepared_raw, prepared_sha256, check_mode=False):
+    """Reobserve one selected preparation; never replace it or advance the head."""
+    saved = _decode_prepared(admission, prepared_raw, prepared_sha256)
+    prior = saved["prior_runtime"]
+    prior_raw = None if prior is None else state.canonical(prior)
+    fresh = prepare(
+        admission=admission,
+        kind=saved["kind"],
+        accepted_head_sha256=saved["predecessor_sha256"],
+        prior_runtime_raw=prior_raw,
+        prior_runtime_sha256=None if prior_raw is None else state.sha256(prior_raw),
+        check_mode=check_mode,
+    )
+    current_body = _decode_prepared(admission, fresh.raw, fresh.sha256)
+    _compatible_preparation(saved, current_body)
+    raw = state.canonical(
+        dict(
+            document_type="cmdmesh.proxmox.owner-native-v4-transition.inspection",
+            schema_version=1,
+            prepared_sha256=prepared_sha256,
+            fresh_preparation_sha256=fresh.sha256,
+            preconditions_observed=True,
+            before_current=current_body["before_current"],
+            candidate_only=True,
+            **dict.fromkeys(PREPARED_FALSE, False),
+        )
+    )
+    return metadata.Candidate(raw, state.sha256(raw))
+
+
+def _post_native(admission, scope, holders, inputs):
+    """Join actual latest-phase checks; never reinterpret the immutable entry."""
+    scope.check()
+    require(
+        scope.latest is not None
+        and not scope.worker_active
+        and not scope.window_active
+        and scope.target_held,
+        "native-closing-phase",
+    )
+    cp = admission.selection._private_checkpoint
+    entry, evidence, prior = (
+        scope.latest.entry,
+        scope.latest.evidence,
+        scope.latest.prior,
+    )
+    request, profile, _ = current._authority(cp)
+    guard, _, _ = runtime.load_profile(request, profile)
+    frame = evidence["observation"]
+    retained = frame["retained" if entry["phase"] == "os_quiesced" else "guarded"]
+    runtime.seal_database(
+        Path(request["policy"]["datasets"]["data"]["mountpoint"]) / "ledger.sqlite3",
+        frame["application"]["database_sha256"],
+        retained["application"]["database"],
+    )
+    current._fast_close(request, profile, entry, evidence, guard)
+    admission.validate()
+    inputs.close()
+    for held in holders:
+        held.check_memberships()
+    joined = {}
+    for held in holders:
+        readers = (
+            held._seals if type(held) is metadata.resources._Resources else (held,)
+        )
+        for reader in readers:
+            for path, node in getattr(reader, "nodes", {}).items():
+                if path in joined:
+                    before = joined[path]
+                    n = min(node["prefix"], before["prefix"])
+                    require(
+                        node["kind"] == before["kind"]
+                        and node["identity"][:n] == before["identity"][:n],
+                        "observer-conflict",
+                    )
+                else:
+                    joined[path] = node
+    for held in holders:
+        held.close_named()
+    metadata._fixed_close(cp, entry, evidence, prior)
+    require(
+        scope.pending is None
+        or type(scope.pending) is journal.Pending
+        and scope.pending.binding == admission.handoff.journal_binding,
+        "native-pending",
+    )
+    scope.check()
+    inputs.fast()
+    for held in holders:
+        held.check_events()
+
+
+def _native_documents(owner, prepared, result):
+    """Reconstruct only v4 documents; legacy transition writers are never used."""
+    intent = journal._document(
+        "intent",
+        profile_sha256=journal._digest(journal._profile(owner)),
+        sequence=result["sequence"],
+        predecessor_sha256=prepared["predecessor_sha256"],
+        kind=prepared["kind"],
+        prepared_sha256=result["prepared_sha256"],
+    )
+    completed = journal._document(
+        "result",
+        profile_sha256=journal._digest(journal._profile(owner)),
+        sequence=result["sequence"],
+        intent_sha256=journal._digest(intent),
+        evidence={
+            "before": result["before"],
+            "entry": result["entry"],
+            "after": result["current"],
+        },
+        phase_files=result["phase_files"],
+        phase_chain_sha256=result["phase_chain_sha256"],
+    )
+    head = journal._head(
+        owner,
+        result["sequence"],
+        "ready",
+        prepared["predecessor_sha256"],
+        journal._digest(intent),
+        journal._digest(completed),
+    )
+    return {"intent.json": intent, "result.json": completed, "HEAD.json": head}
+
+
+def validate_result(*, admission, prepared_raw, prepared_sha256, result):
+    """Pure captured-return validation; no fresh truth or successor permission."""
+    # Bound expanded JSON (including aliases) before allocating its encoding.
+    # Validate a private snapshot, then close the original caller-owned input.
+    phases._json(result)
+    original = state.canonical(result)
+    captured = observe.decode(original)
+    _validate_captured_result(
+        admission=admission,
+        prepared_raw=prepared_raw,
+        prepared_sha256=prepared_sha256,
+        result=captured,
+    )
+    phases._json(result)
+    require(state.canonical(result) == original, "result-input-changed")
+
+
+def _validate_captured_result(*, admission, prepared_raw, prepared_sha256, result):
+    prepared = _decode_prepared(admission, prepared_raw, prepared_sha256)
+    references = _references(admission)
+    state.keys(
+        result,
+        {
+            *references,
+            "prepared_sha256",
+            "predecessor_sha256",
+            "head_sha256",
+            "result_sha256",
+            "sequence",
+            "phase",
+            "current",
+            "before",
+            "entry",
+            "native_outcome",
+            "phase_files",
+            "phase_chain_sha256",
+            "operation_records",
+            "os_transition_verified",
+            "application_quiesced",
+            "application_write_verified",
+            "restore_verified",
+            "rebuild_verified",
+            "backup_verified",
+            "mutation_attempted",
+            "candidate_only",
+            "native_action_dispatched",
+            "original_native_operation_qualified",
+            "ack_recovered",
+            "successor_native_admission_authorized",
+        },
+    )
+    require(
+        all(result[key] == value for key, value in references.items()),
+        "return-admission",
+    )
+    state.integer(result["sequence"], 1, journal.MAX_OPERATIONS)
+    require(
+        result["prepared_sha256"] == prepared_sha256
+        and result["predecessor_sha256"] == prepared["predecessor_sha256"],
+        "return-preparation",
+    )
+    require(
+        all(
+            result[key] is True
+            for key in (
+                "os_transition_verified",
+                "application_quiesced",
+                "mutation_attempted",
+                "candidate_only",
+                "native_action_dispatched",
+            )
+        )
+        and all(
+            result[key] is False
+            for key in (
+                "application_write_verified",
+                "restore_verified",
+                "rebuild_verified",
+                "backup_verified",
+                "original_native_operation_qualified",
+                "ack_recovered",
+                "successor_native_admission_authorized",
+            )
+        ),
+        "return-flags",
+    )
+    phase = "stopped" if prepared["kind"] == "shutdown" else "os_quiesced"
+    require(result["phase"] == phase, "return-phase")
+    owner = admission.handoff.journal_binding
+    documents = _native_documents(owner, prepared, result)
+    state.keys(
+        result["operation_records"],
+        {*documents, *(stage + ".json" for stage in journal.STAGES)},
+    )
+    require(
+        all(
+            type(raw) is str and 0 < len(raw.encode()) <= journal.LIMIT
+            for raw in result["operation_records"].values()
+        ),
+        "return-records",
+    )
+    records = {name: raw.encode() for name, raw in result["operation_records"].items()}
+    require(sum(map(len, records.values())) <= 16777216, "return-size")
+    for name, value in documents.items():
+        require(records[name] == state.canonical(value), "return-document")
+    chain = journal.validate_phase_capture(
+        owner,
+        documents["intent.json"],
+        {stage + ".json": records[stage + ".json"] for stage in journal.STAGES},
+        result["phase_files"],
+    )
+    # This shared helper validates only typed current/entry evidence. Its journal
+    # serializers, operate/poll/status and legacy binding are deliberately unused.
+    metadata.transition._validate_evidence(
+        admission.selection._private_checkpoint,
+        prepared,
+        {
+            "before": result["before"],
+            "entry": result["entry"],
+            "after": result["current"],
+        },
+        chain.records["dispatch.json"]["payload"],
+    )
+    outcome = chain.records["terminal.json"]["payload"]["native_outcome"]
+    current.same(outcome, result["native_outcome"], "return-native-outcome")
+    require(
+        outcome["accepted"] is True
+        and chain.sha256 == result["phase_chain_sha256"]
+        and journal._digest(documents["result.json"]) == result["result_sha256"]
+        and journal._digest(documents["HEAD.json"]) == result["head_sha256"],
+        "return-hashes",
+    )
+
+
+def _poll_native(scope, tx, timeout_seconds):
+    require(
+        scope.window_active and not scope.worker_active and not scope.target_held,
+        "poll-window",
+    )
+    ack = tx.pending.phases.records["ack.json"]["payload"]
+    kind = "vzshutdown" if scope.kind == "shutdown" else "vzstart"
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        scope.check()
+        tx.check()
+        task, log = journal.api.task_state(tx.binding.guest, ack["upid"], kind=kind)
+        require(time.monotonic() <= deadline, "native-task-timeout")
+        journal.api.validate_task_status(tx.binding.guest, ack["upid"], task, kind=kind)
+        outcome = journal.api.native_outcome(task, log)
+        if task["status"] == "stopped":
+            tx.terminal({"task": task, "log": log, "native_outcome": outcome})
+            scope.pending = tx.pending
+            return outcome
+        remaining = deadline - time.monotonic()
+        require(remaining > 0, "native-task-timeout")
+        time.sleep(min(1, remaining))
+
+
+def operate(
+    *,
+    admission,
+    prepared_raw,
+    prepared_sha256,
+    allow_mutation=False,
+    check_mode=False,
+    timeout_seconds=240
+):
+    """Consume one ready slot and issue one observed native request, never replay."""
+    require(
+        type(allow_mutation) is bool
+        and allow_mutation
+        and type(check_mode) is bool
+        and not check_mode,
+        "mutation-mode",
+    )
+    state.integer(timeout_seconds, 1, 600)
+    prepared = _decode_prepared(admission, prepared_raw, prepared_sha256)
+    kind, prior = prepared["kind"], prepared["prior_runtime"]
+    phase = "os_quiesced" if kind == "shutdown" else "stopped"
+    cp, owner = (
+        admission.selection._private_checkpoint,
+        admission.handoff.journal_binding,
+    )
+    inputs = metadata._Inputs(
+        admission.metadata_admission,
+        phase,
+        prior,
+        (
+            *admission._values(),
+            prepared_raw,
+            prepared_sha256,
+            allow_mutation,
+            check_mode,
+            timeout_seconds,
+        ),
+    )
+    with _leased(admission.handoff, kind, prior) as scope:
+        with _retained_readonly(admission, scope) as (holders, mount):
+            with _native_journal(
+                owner, mount, accepted_head_sha256=prepared["predecessor_sha256"]
+            ) as tx:
+                try:
+                    current.same(
+                        metadata.transition._entry_identity(scope.entry),
+                        prepared["entry"],
+                        "preflight-entry",
+                    )
+                    current.same(
+                        observe.mount_facts(scope.request["backup_store"]),
+                        prepared["backup_store"],
+                        "backup-mount",
+                    )
+                    with _phase_current(scope) as frames:
+                        initial = metadata._decode(
+                            frames.initial_raw, state.sha256(frames.initial_raw)
+                        )
+                        current.validate_current(cp, phase, initial)
+                        current.same(
+                            metadata.transition._init_identity(initial),
+                            prepared["init_identity"],
+                            "preflight-init",
+                        )
+                        require(
+                            initial["observation"]["guest"]["runtime"]["uptime"]
+                            >= prepared["uptime_floor"],
+                            "preflight-uptime",
+                        )
+                        scope.pending = tx.begin(
+                            kind=kind, prepared_sha256=prepared_sha256
+                        )
+                        action = "shutdown" if kind == "shutdown" else "start"
+                        scope.pending = tx.dispatch(
+                            dict(
+                                action=action,
+                                binding=asdict(owner.guest),
+                                prepared_sha256=prepared_sha256,
+                                entry_sha256=journal._digest(scope.entry),
+                                host_epoch={
+                                    key: scope.entry["host"][key]
+                                    for key in ("boot_id", "mount_namespace")
+                                },
+                                clock=int(time.time()),
+                                parameters=journal.api._parameters(
+                                    owner.guest, action, None
+                                ),
+                            )
+                        )
+                    before = scope.latest.evidence
+                    _post_native(
+                        admission, scope, [*holders, tx.immutable, tx.quiet], inputs
+                    )
+                    with _native_window(scope):
+                        tx.check()
+                        scope.check()
+                        dispatch = tx.pending.phases.records["dispatch.json"]
+                        scope.outcome = "unknown"
+                        observed = journal.api.post_owner_guest_action(
+                            owner.guest,
+                            action,
+                            journal._digest(dispatch),
+                            dispatch["payload"]["host_epoch"],
+                        )
+                        scope.pending = tx.observed(observed)
+                        ack = journal.owner_ack.validate_ack(
+                            owner.guest,
+                            action,
+                            journal._digest(dispatch),
+                            dispatch["payload"]["host_epoch"],
+                            observed,
+                        )
+                        scope.pending = tx.ack(ack)
+                        outcome = _poll_native(scope, tx, timeout_seconds)
+                        scope.outcome = "failed"
+                        require(outcome["accepted"] is True, "native-task-unqualified")
+                        scope.outcome = "postcondition-refused"
+                    with _phase_current(scope, final=True):
+                        pass
+                    current.same(
+                        observe.mount_facts(scope.request["backup_store"]),
+                        prepared["backup_store"],
+                        "backup-mount",
+                    )
+                    _post_native(
+                        admission, scope, [*holders, tx.immutable, tx.quiet], inputs
+                    )
+                    after = scope.latest.evidence
+                    evidence = dict(before=before, entry=scope.entry, after=after)
+                    candidate = tx.complete(evidence)
+                    result = dict(
+                        **_references(admission),
+                        prepared_sha256=prepared_sha256,
+                        predecessor_sha256=prepared["predecessor_sha256"],
+                        head_sha256=candidate.head_sha256,
+                        result_sha256=candidate.result_sha256,
+                        sequence=candidate.sequence,
+                        phase=after["phase"],
+                        current=after,
+                        before=before,
+                        entry=scope.entry,
+                        native_outcome=outcome,
+                        phase_files=candidate.phases.files,
+                        phase_chain_sha256=candidate.phases.sha256,
+                        os_transition_verified=True,
+                        application_quiesced=True,
+                        application_write_verified=False,
+                        restore_verified=False,
+                        rebuild_verified=False,
+                        backup_verified=False,
+                        mutation_attempted=True,
+                        candidate_only=True,
+                        native_action_dispatched=True,
+                        original_native_operation_qualified=False,
+                        ack_recovered=False,
+                        successor_native_admission_authorized=False,
+                    )
+                    result["operation_records"] = {
+                        name: state.canonical(value).decode()
+                        for name, value in (
+                            _native_documents(owner, prepared, result)
+                            | candidate.phases.records
+                        ).items()
+                    }
+                    validate_result(
+                        admission=admission,
+                        prepared_raw=prepared_raw,
+                        prepared_sha256=prepared_sha256,
+                        result=result,
+                    )
+                    raw = state.canonical(result)
+                    _post_native(
+                        admission, scope, [*holders, tx.immutable, tx.quiet], inputs
+                    )
+                finally:
+                    scope.pending = tx.pending
+    inputs.fast()
+    admission.validate()
+    require(state.canonical(result) == raw, "operation-exit-memory")
+    return result
+
+
+def status(
+    *,
+    admission,
+    prepared_raw,
+    prepared_sha256,
+    accepted_head_sha256,
+    prior_runtime_raw=None,
+    prior_runtime_sha256=None,
+    check_mode=False
+):
+    """Reobserve an explicitly accepted v4 head without writing or native replay."""
+    require(type(check_mode) is bool, "check-mode")
+    prepared = _decode_prepared(admission, prepared_raw, prepared_sha256)
+    live_kind = "resume" if prepared["kind"] == "shutdown" else "shutdown"
+    phase, prior = _preparation_inputs(
+        admission,
+        live_kind,
+        accepted_head_sha256,
+        prior_runtime_raw,
+        prior_runtime_sha256,
+        check_mode,
+    )
+    cp, owner = (
+        admission.selection._private_checkpoint,
+        admission.handoff.journal_binding,
+    )
+    inputs = metadata._Inputs(
+        admission.metadata_admission,
+        phase,
+        prior,
+        (
+            *admission._values(),
+            prepared_raw,
+            prepared_sha256,
+            accepted_head_sha256,
+            prior_runtime_raw,
+            prior_runtime_sha256,
+            check_mode,
+        ),
+    )
+    with _leased(admission.handoff, live_kind, prior) as scope:
+        with _retained_readonly(admission, scope) as (holders, mount):
+            with _observe_ready_journal(
+                owner, mount, accepted_head_sha256=accepted_head_sha256
+            ) as native:
+                view = journal._inspect(owner, accepted_head_sha256)
+                require(
+                    view.head["sequence"] > 0
+                    and view.intent["kind"] == prepared["kind"]
+                    and view.intent["prepared_sha256"] == prepared_sha256
+                    and view.intent["predecessor_sha256"]
+                    == prepared["predecessor_sha256"],
+                    "accepted-transition",
+                )
+                path = (
+                    journal.RUNTIME_ROOT
+                    / owner.pair_key
+                    / journal._slot(view.head["sequence"])
+                    / "result.json"
+                )
+                recorded = journal._read(path, view.seal)
+                require(
+                    journal._digest(recorded) == view.head["result_sha256"],
+                    "accepted-result",
+                )
+                metadata.transition._validate_evidence(
+                    cp,
+                    prepared,
+                    recorded["evidence"],
+                    view.phases.records["dispatch.json"]["payload"],
+                )
+                if phase == "stopped":
+                    current.same(
+                        prior,
+                        recorded["evidence"]["before"]["observation"],
+                        "status-prior",
+                    )
+                current.same(
+                    observe.mount_facts(scope.request["backup_store"]),
+                    prepared["backup_store"],
+                    "backup-mount",
+                )
+                with _phase_current(scope):
+                    pass
+                _post_native(admission, scope, [*holders, native], inputs)
+                ack = view.phases.records["ack.json"]["payload"]
+                task_kind = (
+                    "vzshutdown" if prepared["kind"] == "shutdown" else "vzstart"
+                )
+                task, log = journal.api.task_state(
+                    owner.guest, ack["upid"], kind=task_kind
+                )
+                journal.api.validate_task_status(
+                    owner.guest, ack["upid"], task, kind=task_kind
+                )
+                current.same(
+                    dict(
+                        task=task,
+                        log=log,
+                        native_outcome=journal.api.native_outcome(task, log),
+                    ),
+                    view.phases.records["terminal.json"]["payload"],
+                    "native-task-changed",
+                )
+                with _phase_current(scope):
+                    pass
+                result = dict(
+                    **_references(admission),
+                    prepared_sha256=prepared_sha256,
+                    head_sha256=accepted_head_sha256,
+                    phase=phase,
+                    current=scope.latest.evidence,
+                    os_transition_verified=True,
+                    application_quiesced=True,
+                    mutation_attempted=False,
+                    application_write_verified=False,
+                    restore_verified=False,
+                    rebuild_verified=False,
+                    backup_verified=False,
+                    candidate_only=True,
+                    native_action_dispatched=False,
+                    original_native_operation_qualified=False,
+                    ack_recovered=False,
+                    successor_native_admission_authorized=False,
+                )
+                raw = state.canonical(result)
+                current.same(
+                    observe.mount_facts(scope.request["backup_store"]),
+                    prepared["backup_store"],
+                    "backup-mount",
+                )
+                _post_native(admission, scope, [*holders, native], inputs)
+    inputs.fast()
+    admission.validate()
+    require(state.canonical(result) == raw, "status-exit-memory")
+    return result
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,3 +1280,513 @@ def _native_window(scope):
             primary.add_note("secondary target-lock reacquisition failure")
         finally:
             scope.window_active = False
+
+
+class _NativeSeal(metadata.resources._Seal):
+    """Retain actual native parents/mounts, optionally immutable unused state."""
+
+    def __init__(self, binding, mount, *, fixed):
+        require(type(binding) is journal.Binding and type(fixed) is bool, "native-seal")
+        metadata.admission_codec._mount(mount)
+        super().__init__(binding.pair_key)
+        paths = []
+        self._native_mount = metadata._decode(
+            state.canonical(mount), state.sha256(state.canonical(mount))
+        )
+        try:
+            root, pair = journal.RUNTIME_ROOT, journal.RUNTIME_ROOT / binding.pair_key
+            self._directory(root.parent, private=True)
+            paths.append(root.parent)
+            if fixed:
+                root_fd = self.directory(root, shared=True)
+                require(root_fd is not False, "native-root")
+                if root_fd is not None:
+                    paths.append(root)
+                    self._file(root / "runtime.json", journal.RUNTIME, paths)
+                    pair_fd = self.directory(pair)
+                    require(pair_fd is not False, "native-pair")
+                    self.membership(root, shared=True)
+                    wanted = (
+                        ("runtime.json",)
+                        if pair_fd is None
+                        else tuple(sorted(("runtime.json", binding.pair_key)))
+                    )
+                    require(self.members[str(root)][1] == wanted, "native-root-members")
+                    if pair_fd is not None:
+                        paths.append(pair)
+                        self.membership(pair)
+                        require(
+                            self.members[str(pair)][1]
+                            == ("HEAD.json", "genesis.json", "profile.json"),
+                            "native-pair-members",
+                        )
+                        for name, value in (
+                            ("profile.json", journal._profile(binding)),
+                            ("genesis.json", journal._genesis(binding)),
+                            ("HEAD.json", journal._genesis(binding)),
+                        ):
+                            self._file(pair / name, value, paths)
+            else:
+                for path in (root, pair):
+                    try:
+                        self._directory(path, private=True)
+                    except FileNotFoundError:
+                        break
+                    paths.append(path)
+            lock = root.parent / storage.LOCK_NAME
+            if fixed or os.path.lexists(lock):
+                entry = self.entry(lock)
+                if entry is not None:
+                    self._file(
+                        lock,
+                        dict(
+                            document_type="cmdmesh.proxmox.owner-native-bootstrap-lock",
+                            schema_version=1,
+                            configuration_sha256=state.sha256(storage._configuration()),
+                        ),
+                        paths,
+                    )
+            self._native_paths = tuple(paths)
+            self._native_fixed = (
+                binding,
+                self._native_paths,
+                state.canonical(self._native_mount),
+                storage._configuration(),
+                os.getpid(),
+            )
+            self.freeze_fds()
+            self.check_memberships()
+            self.close_named()
+            self.check_events()
+            self.enumerated = False
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note("secondary native namespace observer release failure")
+            raise
+
+    def _file(self, path, value, paths):
+        raw = state.canonical(value)
+        item = self.file(path)
+        require(type(item) is dict and self.raws[str(path)][0] == raw, "native-file")
+        paths.append(path)
+
+    def _mount(self, fd):
+        facts = metadata.filesystem.statfs(fd)
+        value = self._native_mount
+        device = os.fstat(fd).st_dev
+        require(
+            metadata.filesystem.fd_mount_id(fd) == value["mount_id"]
+            and [os.major(device), os.minor(device)] == value["device"]
+            and all(facts[key] == value[key] for key in ("statfs_type", "statfs_fsid")),
+            "native-destination-mount",
+        )
+
+    def close_named(self):
+        def close():
+            binding, paths, mount, configuration, pid = self._native_fixed
+            require(
+                binding.pair_key == self.pair_key
+                and paths == self._native_paths
+                and mount == state.canonical(self._native_mount)
+                and configuration == storage._configuration()
+                and pid == os.getpid(),
+                "native-observer-memory",
+            )
+            super(_NativeSeal, self).close_named()
+            for path in self._native_paths:
+                self._mount(self.nodes[str(path)]["fd"])
+                flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
+                if self.nodes[str(path)]["kind"] == "directory":
+                    flags |= os.O_DIRECTORY
+                fd = (
+                    os.open(path, flags)
+                    if path == metadata.attempt._WALK_ROOT
+                    else os.open(
+                        path.name, flags, dir_fd=self.nodes[str(path.parent)]["fd"]
+                    )
+                )
+                primary = None
+                try:
+                    self._mount(fd)
+                except BaseException as error:
+                    primary = error
+                    raise
+                finally:
+                    try:
+                        os.close(fd)
+                    except BaseException:
+                        if primary is None:
+                            raise
+                        primary.add_note(
+                            "secondary native named descriptor close failure"
+                        )
+
+        self._check(close)
+
+
+@contextmanager
+def _observe_native_namespace(binding, mount, *, fixed):
+    held = _NativeSeal(binding, mount, fixed=fixed)
+    primary = None
+    try:
+        yield held
+        if not held.enumerated:
+            held.check_memberships()
+        held.close_named()
+        held.check_events()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            held.release()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("secondary native namespace release failure")
+
+
+class _NativeJournalSeal(_NativeSeal):
+    """Exact quiet-boundary chain, including used slots; no journal writes."""
+
+    def __init__(self, binding, mount, view):
+        require(type(view) is journal.View, "journal-view")
+        super().__init__(binding, mount, fixed=False)
+        # New FDs must be releasable even if extended construction fails.
+        self._held = None
+        try:
+            paths = list(self._native_paths)
+            root = journal.RUNTIME_ROOT
+            for name, identity in view.seal.directories.items():
+                path = Path(name)
+                require(
+                    path == root.parent or path.is_relative_to(root), "native-view-path"
+                )
+                self._directory(path, private=True)
+                require(
+                    tuple(self.nodes[name]["identity"][:5]) == tuple(identity),
+                    "native-view-directory",
+                )
+                paths.append(path)
+            self.directory(root, shared=True)
+            self.membership(root, shared=True)
+            require(
+                self.members[str(root)][1]
+                == tuple(sorted(("runtime.json", binding.pair_key))),
+                "native-root-members",
+            )
+            for name, names in view.seal.members.items():
+                path = Path(name)
+                require(
+                    path.is_relative_to(root / binding.pair_key), "native-view-members"
+                )
+                self.exact_directory(
+                    path,
+                    names,
+                    private=True,
+                    expected=list(view.seal.directories[name]),
+                )
+            for name, identity in view.seal.files.items():
+                path = Path(name)
+                require(path.is_relative_to(root), "native-view-file")
+                item = self.file(path)
+                require(
+                    type(item) is dict and tuple(item["identity"]) == tuple(identity),
+                    "native-view-file-identity",
+                )
+                paths.append(path)
+            self._native_paths = tuple(dict.fromkeys(paths))
+            self._native_fixed = (
+                binding,
+                self._native_paths,
+                state.canonical(self._native_mount),
+                storage._configuration(),
+                os.getpid(),
+            )
+            self.freeze_fds()
+            self.check_memberships()
+            self.close_named()
+            self.check_events()
+            self.enumerated = False
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note(
+                    "secondary ready-journal observer construction cleanup failure"
+                )
+            raise
+
+
+@contextmanager
+def _observe_ready_journal(binding, mount, *, accepted_head_sha256):
+    view = journal._inspect(binding, accepted_head_sha256)
+    require(view.head["state"] == "ready", "ready-predecessor")
+    held = _NativeJournalSeal(binding, mount, view)
+    primary = None
+    try:
+        yield held
+        if not held.enumerated:
+            held.check_memberships()
+        held.close_named()
+        held.check_events()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            held.release()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("secondary ready-journal observer release failure")
+
+
+class _ImmutableNativeJournal(_NativeSeal):
+    """Retain accepted history and each published phase across intended writes.
+
+    HEAD and the new slot's membership are mutable only in the fixed primitive
+    windows. Prior slots, all immutable files, and their event queues survive
+    every window. This is a sole-writer adapter, not a syscall sandbox.
+    """
+
+    def __init__(self, binding, mount, view):
+        require(
+            type(view) is journal.View and view.head["state"] == "ready", "ready-view"
+        )
+        super().__init__(binding, mount, fixed=False)
+        try:
+            self.retain(view)
+            root = journal.RUNTIME_ROOT
+            self._held = None
+            self.directory(root, shared=True)
+            self.membership(root, shared=True)
+            require(
+                self.members[str(root)][1]
+                == tuple(sorted(("runtime.json", binding.pair_key))),
+                "native-root-members",
+            )
+            pair = root / binding.pair_key
+            for name, names in view.seal.members.items():
+                path = Path(name)
+                if path != pair:
+                    self.exact_directory(
+                        path,
+                        names,
+                        private=True,
+                        expected=list(view.seal.directories[name]),
+                    )
+            self.freeze_fds()
+            self.check_memberships()
+            self.close_named()
+            self.check_events()
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note(
+                    "secondary immutable journal construction cleanup failure"
+                )
+            raise
+
+    def retain(self, view):
+        """Add immutable files monotonically; never rebase an existing file."""
+        require(type(view) is journal.View and not self.closed, "journal-view")
+        self._held = None
+        paths = list(self._native_paths)
+        root = journal.RUNTIME_ROOT
+        for name, identity in view.seal.directories.items():
+            path = Path(name)
+            require(
+                path == root.parent or path.is_relative_to(root), "native-view-path"
+            )
+            self._directory(path, private=True)
+            require(
+                tuple(self.nodes[name]["identity"][:5]) == tuple(identity),
+                "native-view-directory",
+            )
+            paths.append(path)
+        for name, identity in view.seal.files.items():
+            path = Path(name)
+            require(path.is_relative_to(root), "native-view-file")
+            if path == root / self.pair_key / "HEAD.json":
+                continue
+            if name not in self.raws:
+                item = self.file(path)
+                require(type(item) is dict, "native-view-file")
+            require(
+                tuple(self.nodes[name]["identity"]) == tuple(identity),
+                "native-view-file-identity",
+            )
+            paths.append(path)
+        self._native_paths = tuple(dict.fromkeys(paths))
+        self._native_fixed = (
+            self._native_fixed[0],
+            self._native_paths,
+            state.canonical(self._native_mount),
+            storage._configuration(),
+            os.getpid(),
+        )
+        self.freeze_fds()
+
+
+class _NativeJournal:
+    """One fixed native request, under the coordinator's real pair EX lease.
+
+    A failed publication poisons the adapter. It never retries a primitive,
+    adopts a new ambient HEAD, posts a request, or clears a failure barrier.
+    The latest returned Pending is retained for the coordinator's failure path.
+    """
+
+    def __init__(self, binding, mount, accepted_head_sha256):
+        self.binding = binding
+        self.mount = observe.decode(state.canonical(mount))
+        self.head = accepted_head_sha256
+        self.pending = None
+        self.candidate = None
+        self.immutable = None
+        self.quiet = None
+        self.closed = False
+        self.poisoned = False
+        self._pid = os.getpid()
+        try:
+            view = journal._inspect(binding, accepted_head_sha256)
+            self.immutable = _ImmutableNativeJournal(binding, self.mount, view)
+            self.quiet = _NativeJournalSeal(binding, self.mount, view)
+            self.check()
+        except BaseException as error:
+            try:
+                self.release()
+            except BaseException:
+                error.add_note("secondary native journal constructor cleanup failure")
+            raise
+
+    def check(self):
+        require(
+            not self.closed and not self.poisoned and os.getpid() == self._pid,
+            "journal-closed-or-poisoned",
+        )
+        try:
+            require(
+                self.immutable is not None and self.quiet is not None,
+                "journal-boundary",
+            )
+            for held in (self.immutable, self.quiet):
+                held.check_memberships()
+            for held in (self.immutable, self.quiet):
+                held.close_named()
+            for held in (self.immutable, self.quiet):
+                held.check_events()
+        except BaseException:
+            self.poisoned = True
+            raise
+
+    def _before(self, stage):
+        require(not self.closed and not self.poisoned, "journal-closed-or-poisoned")
+        count = -1 if self.pending is None else len(self.pending.phases.records)
+        wanted = (
+            -1
+            if stage == "begin"
+            else (
+                len(journal.STAGES)
+                if stage == "complete"
+                else journal.STAGES.index(stage)
+            )
+        )
+        require(count == wanted and self.candidate is None, "journal-stage")
+        self.check()
+        # From this point any exception is terminal for this adapter, including
+        # a primitive that publishes successfully and then fails before return.
+        self.poisoned = True
+        self.quiet.release()
+        self.quiet = None
+
+    def _after(self, head):
+        view = journal._inspect(self.binding, head)
+        # Drain existing policies before arming guards for the new filenames.
+        # Never clear or replace the immutable history observer/event queue.
+        self.immutable.check_memberships()
+        self.immutable.close_named()
+        self.immutable.check_events()
+        self.immutable.retain(view)
+        self.quiet = _NativeJournalSeal(self.binding, self.mount, view)
+        self.head = head
+        self.poisoned = False
+        self.check()
+
+    def begin(self, *, kind, prepared_sha256):
+        self._before("begin")
+        self.pending = journal._begin(self.binding, self.head, kind, prepared_sha256)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def dispatch(self, payload):
+        self._before("dispatch")
+        self.pending = journal._append_phase(self.pending, "dispatch", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def observed(self, payload):
+        self._before("ack-observed")
+        self.pending = journal._append_phase(self.pending, "ack-observed", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def ack(self, payload):
+        self._before("ack")
+        self.pending = journal._append_phase(self.pending, "ack", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def terminal(self, payload):
+        self._before("terminal")
+        self.pending = journal._append_phase(self.pending, "terminal", payload)
+        self._after(self.pending.pending_head_sha256)
+        return self.pending
+
+    def complete(self, evidence):
+        self._before("complete")
+        self.candidate = journal._complete(self.pending, evidence)
+        self._after(self.candidate.head_sha256)
+        return self.candidate
+
+    def release(self):
+        if self.closed:
+            return
+        self.closed = True
+        primary = None
+        for held in (self.quiet, self.immutable):
+            if held is not None:
+                try:
+                    held.release()
+                except BaseException as error:
+                    if primary is None:
+                        primary = error
+                    else:
+                        primary.add_note(
+                            "secondary native journal observer release failure"
+                        )
+        if primary is not None:
+            raise primary
+
+
+@contextmanager
+def _native_journal(binding, mount, *, accepted_head_sha256):
+    """Own local journal observers only; the coordinator owns all actual leases."""
+    held = _NativeJournal(binding, mount, accepted_head_sha256)
+    primary = None
+    try:
+        yield held
+        held.check()
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            held.release()
+        except BaseException:
+            if primary is None:
+                raise
+            primary.add_note("secondary native journal release failure")

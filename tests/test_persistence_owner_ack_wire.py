@@ -178,9 +178,21 @@ class ObservedOwnerWireTests(unittest.TestCase):
             codec.validate_ack(binding, "start", "d" * 64, self.epoch, observed)
 
     def test_partial_response_retains_only_bounded_hash_without_retry(self):
-        with self.server() as (port, requests):
+        responses = []
+        original = http.client.HTTPConnection.getresponse
+
+        def track(connection):
+            response = original(connection)
+            responses.append(response)
+            return response
+
+        with self.server() as (port, requests), mock.patch.object(
+            http.client.HTTPConnection, "getresponse", track
+        ):
             observed, binding, _ = self.call(port, requests, partial=True)
         self.assertEqual(len(requests), 1)
+        self.assertEqual(len(responses), 1)
+        self.assertTrue(responses[0].isclosed(), "TLS response stream left open")
         self.assertIs(observed["response"]["body_complete"], False)
         self.assertIsNone(observed["response"]["safe_body"])
         self.assertNotIn("PRIVATE_PARTIAL", json.dumps(observed))
